@@ -20,16 +20,17 @@ map<char, vector<string>> loadFont(const string &filename) {
     }
 
 
-    while (getline(inputFile, line)) {
-        if (line[0] == '[' && line.back() == ']') {             // check if starts with [..]
+    while (getline(inputFile, line)) {                          // read and get input from the file and load it to string line
+        if (line[0] == '[' && line.back() == ']') {             // check if starts with [ and ends with ]
             if (currentChar != '\0') {
                 font[currentChar] = buffer;
-                buffer.clear();
+                buffer.clear();                                 // clear the content of previous letter
             }
+            
             currentChar = line[1];                              // line[1] = letter inside the bracket
         } 
         else if (!line.empty()) {
-            buffer.push_back(line);
+            buffer.push_back(line);                             // append the content of the letter
         }
     }
 
