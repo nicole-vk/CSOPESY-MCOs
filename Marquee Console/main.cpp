@@ -19,7 +19,6 @@ bool isVirtualKeyPressed(int virKey){
 void checkKey(){
     while(::isRunning){
         if(isVirtualKeyPressed(VK_DOWN)){
-            cout << "shiwhdiowabdqwndqw";
             ::isRunning = false;
         }
     }
@@ -108,7 +107,7 @@ void animate(map<char, vector<string>> font){
             if (waveY >= 0 && waveY < height) buffer[waveY][x] = '~';
             if (waveY + 1 >= 0 && waveY + 1 < height) buffer[waveY + 1][x] = '~';
 
-            for (int y = waveY + 2; y < height; y++) buffer[y][x] = '.';
+            for (int y = waveY + 2; y < waveY + 7 && y < height; y++) buffer[y][x] = '.';
         }
 
         // CSOPESY text movement (riding the wave like the ball)
@@ -126,9 +125,8 @@ void animate(map<char, vector<string>> font){
                 }
             }
         }
-
-        // clear and draw frame
-        cout << "\033[H\033[J";
+        
+        cout << "\033[0;0H";
         for (auto &line : buffer) cout << line << endl;
 
         usleep(80000); // ~12 FPS
@@ -140,10 +138,14 @@ void commands(){
     string command;
 
     while(::isRunning){
-        cout << "command > ";
+        cout << "\033[22;0Hcommand > " << flush;
+
         getline(cin, command);
 
         cout << command << endl;
+
+        if(command == "exit")
+            ::isRunning = false;
     }
 }
 
