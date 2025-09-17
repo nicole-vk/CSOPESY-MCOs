@@ -3,7 +3,7 @@
 #include <cmath>
 #include <windows.h>
 #include <thread>
-#include <unistd.h> // for usleep
+#include <unistd.h>
 
 using namespace std;
 bool isRunning = true;
