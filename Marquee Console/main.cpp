@@ -17,7 +17,7 @@ bool isVirtualKeyPressed(int virKey){
 }
 
 void checkKey(){
-    while(isRunning){
+    while(::isRunning){
         if(isVirtualKeyPressed(VK_DOWN)){
             cout << "shiwhdiowabdqwndqw";
             ::isRunning = false;
@@ -97,7 +97,7 @@ void animate(map<char, vector<string>> font){
 
     int textX = width / 2; // center horizontally
 
-    while (isRunning) {
+    while (::isRunning) {
         buffer.assign(height, string(width, ' '));
 
         // draw waves
@@ -136,14 +136,27 @@ void animate(map<char, vector<string>> font){
     }
 }
 
+void commands(){
+    string command;
+
+    while(::isRunning){
+        cout << "command > ";
+        getline(cin, command);
+
+        cout << command << endl;
+    }
+}
+
 
 int main() {
     auto font = loadFont(::fileName);
 
     thread anim(animate, font);
+    thread command(commands);
     thread check(checkKey);
 
     anim.join();
+    command.join();
     check.join();
 
 
