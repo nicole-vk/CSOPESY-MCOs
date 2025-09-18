@@ -19,7 +19,7 @@ bool is_stop = false;
 int speed;
 mutex speed_mutex;
 
-string prompt_display_buffer = "command > ";
+string prompt_display_buffer = "Command > ";
 mutex prompt_mutex;
 
 queue<string> command_queue;
@@ -244,7 +244,7 @@ int main() {
 
         if (!cmd.empty()) {
             lock_guard<mutex> lock(prompt_mutex);
-            prompt_display_buffer = "command > " + cmd;
+            prompt_display_buffer = "Command > " + cmd;
             
             if (cmd == "exit"){
                 ::is_running = false;
