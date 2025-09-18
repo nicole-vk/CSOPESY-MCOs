@@ -73,7 +73,8 @@ map<char, vector<string>> loadFont(const string filename) {
 vector<string> makeAscii(const string &text, map<char, vector<string>> &font) {
     vector<string> result;
 
-    if (text.empty() || font.empty()) return result;
+    if (text.empty() || font.empty()) 
+        return result;
 
     int rows = font.begin()->second.size();                     // check the number of rows each letter has (all the same)
     result.assign(rows, "");                                    // create empty nRows
