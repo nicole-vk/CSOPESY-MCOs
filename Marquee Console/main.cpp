@@ -158,7 +158,7 @@ void marquee_logic_thread_func(int width, int height) {
 
 
 void display_thread_func() {
-    const int refresh_rate_ms = 50;
+    const int REFRESH_RATE = 50;
     while (::is_running) {
         string marquee_copy;
         string prompt_copy;
@@ -188,7 +188,7 @@ void display_thread_func() {
         cout << marquee_copy;
         cout << "\033[25;0H" << prompt_copy << flush;
 
-        this_thread::sleep_for(chrono::milliseconds(refresh_rate_ms));
+        this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
     }
 }
 
