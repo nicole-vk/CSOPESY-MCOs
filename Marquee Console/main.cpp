@@ -1,28 +1,36 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <windows.h>
 #include <thread>
-#include <unistd.h>
+#include <atomic>
+#include <mutex>
+#include <queue>
+#include <sstream>
 #include <fstream>
 #include <map>
 #include <string>
+#include <unistd.h>
 
 using namespace std;
-bool isRunning = true;
-const string fileName = "characters.txt";
 
-bool isVirtualKeyPressed(int virKey){
-    return GetAsyncKeyState(virKey) & 0x8000;       // checks if key is pressed
-}
+bool is_running = true;
+bool is_stop = false;
 
-void checkKey(){
-    while(::isRunning){
-        if(isVirtualKeyPressed(VK_DOWN)){
-            ::isRunning = false;
-        }
-    }
-}
+int speed;
+mutex speed_mutex;
+
+string prompt_display_buffer = "command > ";
+mutex prompt_mutex;
+
+queue<string> command_queue;
+mutex command_queue_mutex;
+
+string marquee_display_buffer = "";
+mutex marquee_to_display_mutex;
+
+vector<string> shared_ascii_text;
+mutex ascii_text_mutex;
+
 
 map<char, vector<string>> loadFont(const string filename) {
     map<char, vector<string>> font;
@@ -84,83 +92,186 @@ vector<string> makeAscii(const string &text, map<char, vector<string>> &font) {
     return result;
 }
 
-void animate(map<char, vector<string>> font){
-    const int width = 120;
-    const int height = 20;
+
+void gotoxy(int x, int y) {
+    cout << "\033[" << y << ";" << x << "H";
+}
+
+
+void keyboard_handler_thread_func() {
+    string command_line;
+    while (::is_running) {
+        getline(cin, command_line);
+        if (!command_line.empty()) {
+            lock_guard<mutex> lock(command_queue_mutex);
+            command_queue.push(command_line);
+        }
+    }
+}
+
+
+void marquee_logic_thread_func(int width, int height) {
     double t = 0;
+    vector<string> ascii_text;
 
-    // ASCII art for CSOPESY
-    vector<string> csopesy = makeAscii("CSOPESY", font);
-    
-    vector<string> buffer(height, string(width, ' '));
+    while (!::is_stop) {
+        vector<string> buffer(height, string(width, ' '));
 
-    int textX = width / 2; // center horizontally
-
-    while (::isRunning) {
-        buffer.assign(height, string(width, ' '));
-
-        // draw waves
-        for (int x = 0; x < width; x++) {
-            float wave = 3 * sin(0.12 * x + t) + 2 * sin(0.07 * x + t * 1.3);
-            int waveY = (int)(wave + height / 2);
-
-            if (waveY >= 0 && waveY < height) buffer[waveY][x] = '~';
-            if (waveY + 1 >= 0 && waveY + 1 < height) buffer[waveY + 1][x] = '~';
-
-            for (int y = waveY + 2; y < waveY + 7 && y < height; y++) buffer[y][x] = '.';
+        {
+            lock_guard<mutex> lock(ascii_text_mutex);
+            ascii_text = shared_ascii_text; 
         }
 
-        // CSOPESY text movement (riding the wave like the ball)
-        float waveText = 3 * sin(0.12 * textX + t) + 2 * sin(0.07 * textX + t * 1.3);
-        int textY = (int)(waveText + height / 2 - csopesy.size());
+        // Wave
+        for (int x = 0; x < width; x++) {
+            float wave = 3*sin(0.12*x+t) + 2*sin(0.07*x + t*1.3);
+            int waveY = int(wave + height/2);
+            if (waveY >= 0 && waveY < height) buffer[waveY][x] = '~';
+            if (waveY+1 >=0 && waveY+1<height) buffer[waveY+1][x] = '~';
+            for (int y=waveY+2; y<waveY+7 && y<height; y++) buffer[y][x] = '.';
+        }
 
-        for (int by = 0; by < csopesy.size(); by++) {
-            for (int bx = 0; bx < csopesy[by].size(); bx++) {
-                char ch = csopesy[by][bx];
+        // ASCII text
+        int textX = width/2;
+        int textY = int(3*sin(0.12*textX+t) + 2*sin(0.07*textX+t*1.3) + height/2 - ascii_text.size());
+        for (int by=0; by<ascii_text.size(); by++) {
+            for (int bx=0; bx<ascii_text[by].size(); bx++) {
+                char ch = ascii_text[by][bx];
                 int sy = textY + by;
-                int sx = textX - (csopesy[by].size() / 2) + bx;
+                int sx = textX - (ascii_text[by].size()/2) + bx;
 
-                if (ch != ' ' && sy >= 0 && sy < height && sx >= 0 && sx < width) {
+                if (ch != ' ' && sy>=0 && sy<height && sx>=0 && sx<width)
                     buffer[sy][sx] = ch;
-                }
             }
         }
-        
-        cout << "\033[0;0H";
-        for (auto &line : buffer) cout << line << endl;
 
-        usleep(80000); // ~12 FPS
+        // Combine into single string
+        string combined = "";
+        for (auto &line: buffer) combined += line + "\n";
+
+        // Update display buffer
+        {
+            lock_guard<mutex> lock(marquee_to_display_mutex);
+            marquee_display_buffer = combined;
+        }
+
         t += 0.5;
+        usleep(speed);
     }
 }
 
-void commands(){
-    string command;
 
-    while(::isRunning){
-        cout << "\033[22;0Hcommand > " << flush;
+void display_thread_func() {
+    const int refresh_rate_ms = 50;
+    while (::is_running) {
+        string marquee_copy;
+        string prompt_copy;
+        {
+            lock_guard<mutex> lock1(marquee_to_display_mutex);
+            marquee_copy = marquee_display_buffer;
+        }
+        {
+            lock_guard<mutex> lock2(prompt_mutex);
+            prompt_copy = prompt_display_buffer;
+        }
 
-        getline(cin, command);
+        cout << "\033[0;0H"; // move cursor top-left
+        cout << marquee_copy;
+        cout << "\033[25;0H" << prompt_copy << flush;
 
-        cout << command << endl;
-
-        if(command == "exit")
-            ::isRunning = false;
+        this_thread::sleep_for(chrono::milliseconds(refresh_rate_ms));
     }
 }
 
+vector<string> extractCommand(string cmd){
+    stringstream ss(cmd);
+    string word;
+    vector<string> words;
+    
+    while (getline(ss, word, ' ')) {        // space as the delimiter
+        words.push_back(word);
+    }
+    
+    return words;
+}
+
+void help_option(){
+    cout << "help          - displays the commands and its description." << endl;
+    cout << "start_marquee - starts the marquee animation." << endl;
+    cout << "stop_marquee  - stops the marquee animation." << endl ;
+    cout << "set_text      - accepts a text input and displays it as a marquee." <<  endl;
+    cout << "set_speed     - sets the marquee animation refresh in milliseconds." <<  endl;
+    cout << "exit          - terminates the console." <<  endl;
+}
 
 int main() {
-    auto font = loadFont(::fileName);
+    auto font = loadFont("characters.txt");
 
-    thread anim(animate, font);
-    thread command(commands);
-    thread check(checkKey);
+    {
+        lock_guard<mutex> ascii_lock(ascii_text_mutex);
+        ::shared_ascii_text = makeAscii("CSOPESY", font);
+    }
 
-    anim.join();
-    command.join();
-    check.join();
+    {
+        lock_guard<mutex> speed_lock(speed_mutex);
+        ::speed = 80000;
+    }
 
+
+    // width and height of the animation thread
+    const int WIDTH = 120;
+    const int HEIGHT = 20;
+
+    thread marquee_thread(marquee_logic_thread_func, WIDTH, HEIGHT);
+    thread display_thread(display_thread_func);
+    thread keyboard_thread(keyboard_handler_thread_func);
+
+    
+    while (::is_running) {
+        string cmd;
+        {
+            lock_guard<mutex> lock(command_queue_mutex);
+            if (!command_queue.empty()) {
+                cmd = command_queue.front();
+                command_queue.pop();
+            }
+        }
+
+        if (!cmd.empty()) {
+            lock_guard<mutex> lock(prompt_mutex);
+            prompt_display_buffer = "command > " + cmd;
+            
+            if (cmd == "exit"){
+                ::is_running = false;
+                exit(0);
+            }
+            else if(cmd == "help")
+                help_option();
+            else if(cmd == "start_marquee")
+                ::is_stop = false;
+            else if(cmd == "stop_marquee")
+                ::is_stop = true;
+            else if(cmd.rfind("set_text", 0) == 0){
+                vector<string> words = extractCommand(cmd);
+                lock_guard<mutex> lock(ascii_text_mutex);
+                ::shared_ascii_text = makeAscii(words[1], font);
+            }
+            else if(cmd.rfind("set_speed", 0) == 0){
+                vector<string> words = extractCommand(cmd);
+                lock_guard<mutex> speed_lock(speed_mutex);
+                ::speed = stoi(words[1]);                           // convert string to int
+            }
+
+
+        }
+
+        this_thread::sleep_for(chrono::milliseconds(10));
+    }
+
+    // Join threads
+    if (marquee_thread.joinable()) marquee_thread.join();
+    if (display_thread.joinable()) display_thread.join();
+    if (keyboard_thread.joinable()) keyboard_thread.join();
 
     return 0;
 }
