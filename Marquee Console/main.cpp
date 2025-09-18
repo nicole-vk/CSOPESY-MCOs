@@ -218,8 +218,8 @@ int main() {
     cout << "\033[2J\033[H";                                            // clear screen
 
     auto font = loadFont("characters.txt");
-    ::ascii_text = makeAscii("CSOPESY", font);
-    ::speed = 80000;
+    ::ascii_text = makeAscii("CSOPESY", font);                          // default ascii
+    ::speed = 80000;                                                    // default speed
 
 
     // width and height of the animation thread
