@@ -70,7 +70,7 @@ map<char, vector<string>> loadFont(const string filename) {
 }
 
 
-vector<string> makeAscii(const string &text, map<char, vector<string>> &font) {
+vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     vector<string> result;
 
     if (text.empty() || font.empty()) 
