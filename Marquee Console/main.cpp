@@ -275,7 +275,7 @@ int main() {
         this_thread::sleep_for(chrono::milliseconds(10));
     }
 
-    // Join threads
+    // join threads
     if (marquee_thread.joinable()) marquee_thread.join();
     if (display_thread.joinable()) display_thread.join();
     if (keyboard_thread.joinable()) keyboard_thread.join();
