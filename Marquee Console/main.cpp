@@ -10,11 +10,14 @@
 #include <map>
 #include <string>
 #include <unistd.h>
+#include <string>
 
 using namespace std;
 
 bool is_running = true;
 bool is_stop = false;
+std::atomic <bool> gotta_clear_dat_shet(false);
+std::atomic <bool> gotta_clear_dat_ascii(false);
 
 int speed;
 mutex speed_mutex;
@@ -93,19 +96,53 @@ vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     return result;
 }
 
-
 void keyboard_handler_thread_func() {
     string command_line;
 
     while (::is_running) {
-        getline(cin, command_line);
+        char c = cin.get();  //Reads per line
 
-        if (!command_line.empty()) {
-            lock_guard<mutex> lock(command_queue_mutex);
-            command_queue.push(command_line);
+        if (c == '\033') {         // Skip any weird characters
+            cin.get();
+            cin.get();
+            continue;
+        }
+
+        if (c == '\n') {  // If enter is pressed
+            if (!command_line.empty()) {
+                {
+                    lock_guard<mutex> lock(command_queue_mutex);
+                    command_queue.push(command_line);
+                }
+                command_line.clear();
+            }
+
+            // reset prompt right away
+            {
+                lock_guard<mutex> lock(prompt_mutex);
+                prompt_display_buffer = "Command > ";
+            }
+            gotta_clear_dat_shet = true;
+        }
+        else if (c == 127 || c == 8) { // OS Agnostic Backspace
+            if (!command_line.empty()) {
+                command_line.pop_back();
+            }
+            {
+                lock_guard<mutex> lock(prompt_mutex);
+                prompt_display_buffer = "Command > " + command_line;
+            }
+        }
+        else if (isprint(c)) { // If the character is normal, add it to the command_line and display
+            command_line.push_back(c);
+            {
+                lock_guard<mutex> lock(prompt_mutex);
+                prompt_display_buffer = "Command > " + command_line;
+            }
         }
     }
 }
+
 
 
 void marquee_logic_thread_func(int width, int height) {
@@ -185,9 +222,22 @@ void display_thread_func() {
         */
 
 
-        cout << "\033[0;0H";
+        if (gotta_clear_dat_ascii){
+            cout << "\033[2J\033[H";
+            gotta_clear_dat_ascii = false;
+        }
+        else {
+            cout << "\033[0;0H";
+        }
+
         cout << marquee_copy;
-        cout << "\033[25;0H" << prompt_copy << flush;
+        cout << "\033[25;0H";
+        if (gotta_clear_dat_shet){
+            cout << "\033[K"; // clear the line
+            gotta_clear_dat_shet = false;
+        }    
+        
+        cout << prompt_copy << flush;
 
         this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
     }
@@ -242,25 +292,28 @@ int main() {
             }
         }
 
-        if (!cmd.empty()) {
-            lock_guard<mutex> lock(prompt_mutex);
-            prompt_display_buffer = "Command > " + cmd;
-            
+        if (!cmd.empty()) { 
             if (cmd == "exit"){
                 ::is_running = false;
                 exit(0);
             }
             else if(cmd == "help")
                 help_option();
+            else if(cmd == "clear")
+                cout << "\033[2J\033[H";   
             else if(cmd == "start_marquee")
                 ::is_stop = false;
             else if(cmd == "stop_marquee")
                 ::is_stop = true;
             else if(cmd.rfind("set_text", 0) == 0){
-                vector<string> words = extractCommand(cmd);
+                string words = cmd.substr(9);
+
+                {
+                    lock_guard<mutex> lock(ascii_text_mutex);
+                    ::ascii_text = makeAscii(words, font);
+                }
                 
-                lock_guard<mutex> lock(ascii_text_mutex);
-                ::ascii_text = makeAscii(words[1], font);
+                gotta_clear_dat_ascii = true;
             }
             else if(cmd.rfind("set_speed", 0) == 0){
                 vector<string> words = extractCommand(cmd);
@@ -270,7 +323,13 @@ int main() {
             }
             else
                 cout << "Command not found. Please check the 'help' option.";
+            
+            //cout << "\033[2J\033[H";   
+            lock_guard<mutex> lock(prompt_mutex);
+            prompt_display_buffer = "Command > ";
+
         }
+        
 
         this_thread::sleep_for(chrono::milliseconds(10));
     }
