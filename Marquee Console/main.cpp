@@ -16,7 +16,7 @@ using namespace std;
 
 bool is_running = true;
 bool is_stop = false;
-atomic <bool> gotta_clear_dat_shet(false);
+atomic <bool> clear_dat_stuff(false);
 atomic <bool> gotta_clear_dat_ascii(false);
 
 int speed;
@@ -122,7 +122,7 @@ void keyboard_handler_thread_func() {
                 lock_guard<mutex> lock(prompt_mutex);
                 prompt_display_buffer = "Command > ";
             }
-            gotta_clear_dat_shet = true;
+            clear_dat_stuff = true;
         }
         else if (c == 127 || c == 8) { // OS Agnostic Backspace
             if (!command_line.empty()) {
@@ -212,8 +212,6 @@ void display_thread_func() {
         }
 
 
-
-
         /*
         
         BELOW IS THE PROBLEM....
@@ -222,21 +220,25 @@ void display_thread_func() {
         */
 
 
-        if (gotta_clear_dat_ascii){
-            cout << "\033[2J\033[H";
-            gotta_clear_dat_ascii = false;
-        }
-        else {
-            cout << "\033[0;0H";
-        }
+        cout << "\033[H";
 
-        cout << marquee_copy;
-        cout << "\033[25;0H";
-        if (gotta_clear_dat_shet){
-            cout << "\033[K"; // clear the line
-            gotta_clear_dat_shet = false;
-        }    
-        
+        cout << marquee_copy << "\n";
+        cout << "\033[K";
+
+        // Static developer info and clear end line
+        cout << "Group developers:\033[K\n";
+        cout << "Liam Michael Alain B. Ancheta\033[K\n";
+        cout << "Nicole Jia Ying S. Shi\033[K\n";
+        cout << "Rafael Luis L. Navarro\033[K\n";
+        cout << "Reuchlin Charles S. Faustino\033[K\n\n";
+
+        cout << "Version date: 2025-09-24\033[K\n\n";
+
+
+        if (clear_dat_stuff) {
+            cout << "\033[K"; // clear line before drawing prompt
+            clear_dat_stuff = false;
+        }
         cout << prompt_copy << flush;
 
         this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
