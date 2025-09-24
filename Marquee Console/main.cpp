@@ -16,8 +16,8 @@ using namespace std;
 
 bool is_running = true;
 bool is_stop = false;
-std::atomic <bool> gotta_clear_dat_shet(false);
-std::atomic <bool> gotta_clear_dat_ascii(false);
+atomic <bool> gotta_clear_dat_shet(false);
+atomic <bool> gotta_clear_dat_ascii(false);
 
 int speed;
 mutex speed_mutex;
@@ -256,6 +256,7 @@ vector<string> extractCommand(string cmd){
 }
 
 void help_option(){
+    cout << "\033[J";
     cout << "help          - displays the commands and its description." << endl;
     cout << "start_marquee - starts the marquee animation." << endl;
     cout << "stop_marquee  - stops the marquee animation." << endl ;
@@ -295,16 +296,22 @@ int main() {
         if (!cmd.empty()) { 
             if (cmd == "exit"){
                 ::is_running = false;
+                cout << "\033[J";
                 exit(0);
             }
             else if(cmd == "help")
                 help_option();
             else if(cmd == "clear")
                 cout << "\033[2J\033[H";   
-            else if(cmd == "start_marquee")
+            else if(cmd == "start_marquee"){
+                cout << "\033[J";
                 ::is_stop = false;
-            else if(cmd == "stop_marquee")
+            }
+            else if(cmd == "stop_marquee"){
+                cout << "\033[J";
                 ::is_stop = true;
+                
+            }
             else if(cmd.rfind("set_text", 0) == 0){
                 string words = cmd.substr(9);
 
@@ -321,13 +328,10 @@ int main() {
                 lock_guard<mutex> speed_lock(speed_mutex);
                 ::speed = stoi(words[1]);                           // convert string to int
             }
-            else
-                cout << "Command not found. Please check the 'help' option.";
-            
-            //cout << "\033[2J\033[H";   
-            lock_guard<mutex> lock(prompt_mutex);
-            prompt_display_buffer = "Command > ";
-
+            else{
+                cout << "\033[J";   
+                cout << "Command not found. Please check the 'help' option." <<  endl;
+            }
         }
         
 
