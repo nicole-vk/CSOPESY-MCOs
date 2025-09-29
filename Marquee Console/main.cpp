@@ -33,10 +33,11 @@ mutex marquee_display_mutex;
 vector<string> ascii_text;
 mutex ascii_text_mutex;
 
-// message buffer (help/errors/status)
+// global message buffer
 string message_text;
 mutex message_mutex;
 
+// ---------------- font loader ----------------
 map<char, vector<string>> loadFont(const string filename) {
     map<char, vector<string>> font;
     string line;
@@ -69,6 +70,7 @@ map<char, vector<string>> loadFont(const string filename) {
     return font;
 }
 
+// ---------------- ascii maker ----------------
 vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     vector<string> result;
     if (text.empty() || font.empty())
@@ -77,20 +79,13 @@ vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     int rows = font.begin()->second.size();
     result.assign(rows, "");
 
-    int maxWidth = 0;
-    for (auto &p : font)
-        for (auto &ln : p.second)
-            if ((int)ln.size() > maxWidth) maxWidth = ln.size();
-
     for (int r = 0; r < rows; r++) {
         for (char c : text) {
             char up = toupper(c);
             if (font.count(up)) {
-                string part = font[up][r];
-                part.resize(maxWidth, ' ');
-                result[r] += part + " ";
+                result[r] += font[up][r] + " ";
             } else {
-                result[r] += string(maxWidth, ' ') + " ";
+                result[r] += "  ";
             }
         }
     }
@@ -98,33 +93,36 @@ vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     return result;
 }
 
+// ---------------- keyboard handler ----------------
 void keyboard_handler_thread_func() {
     string command_line;
 
     while (::is_running) {
-        int ci = cin.get();  // reads one character
+        int ci = cin.get();
         if (ci == EOF) break;
         char c = static_cast<char>(ci);
 
-        if (c == '\033') { // skip escape sequences
+        if (c == '\033') { // escape sequences
             if (cin.peek() != EOF) cin.get();
             if (cin.peek() != EOF) cin.get();
             continue;
         }
 
-        if (c == '\n') {  // Enter pressed
+        if (c == '\n') {  // enter
             if (!command_line.empty()) {
-                lock_guard<mutex> lock(command_queue_mutex);
-                command_queue.push(command_line);
+                {
+                    lock_guard<mutex> lock(command_queue_mutex);
+                    command_queue.push(command_line);
+                }
                 command_line.clear();
             }
             {
                 lock_guard<mutex> lock(prompt_mutex);
-                prompt_display_buffer = "Command > ";  // reset buffer
+                prompt_display_buffer = "Command > ";
             }
             clear_dat_stuff = true;
         }
-        else if (c == 127 || c == 8) { // Backspace
+        else if (c == 127 || c == 8) { // backspace
             if (!command_line.empty()) {
                 command_line.pop_back();
             }
@@ -133,7 +131,7 @@ void keyboard_handler_thread_func() {
                 prompt_display_buffer = "Command > " + command_line;
             }
         }
-        else if (isprint(static_cast<unsigned char>(c))) { // Normal chars
+        else if (isprint(static_cast<unsigned char>(c))) {
             command_line.push_back(c);
             {
                 lock_guard<mutex> lock(prompt_mutex);
@@ -143,6 +141,7 @@ void keyboard_handler_thread_func() {
     }
 }
 
+// ---------------- marquee logic ----------------
 void marquee_logic_thread_func(int width, int height) {
     double t = 0;
 
@@ -156,14 +155,14 @@ void marquee_logic_thread_func(int width, int height) {
 
         // wave animation
         for (int x = 0; x < width; x++) {
-            float wave = 3 * sin(0.12 * x + t) + 2 * sin(0.07 * x + t * 1.3);
-            int waveY = int(wave + height / 2);
+            float wave = 3*sin(0.12*x+t) + 2*sin(0.07*x + t*1.3);
+            int waveY = int(wave + height/2);
             if (waveY >= 0 && waveY < height) buffer[waveY][x] = '~';
-            if (waveY + 1 >= 0 && waveY + 1 < height) buffer[waveY + 1][x] = '~';
-            for (int y = waveY + 2; y < waveY + 7 && y < height; y++) buffer[y][x] = '.';
+            if (waveY+1 >=0 && waveY+1<height) buffer[waveY+1][x] = '~';
+            for (int y=waveY+2; y<waveY+7 && y<height; y++) buffer[y][x] = '.';
         }
 
-        // ascii text overlay
+        // ascii overlay
         vector<string> local_ascii;
         {
             lock_guard<mutex> lock(ascii_text_mutex);
@@ -171,21 +170,21 @@ void marquee_logic_thread_func(int width, int height) {
         }
 
         if (!local_ascii.empty()) {
-            int textX = width / 2;
-            int textY = int(3 * sin(0.12 * textX + t) + 2 * sin(0.07 * textX + t * 1.3) + height / 2 - local_ascii.size());
-            for (int by = 0; by < (int)local_ascii.size(); by++) {
-                for (int bx = 0; bx < (int)local_ascii[by].size(); bx++) {
+            int textX = width/2;
+            int textY = int(3*sin(0.12*textX+t) + 2*sin(0.07*textX+t*1.3) + height/2 - local_ascii.size());
+            for (int by=0; by<(int)local_ascii.size(); by++) {
+                for (int bx=0; bx<(int)local_ascii[by].size(); bx++) {
                     char ch = local_ascii[by][bx];
                     int sy = textY + by;
-                    int sx = textX - (local_ascii[by].size() / 2) + bx;
-                    if (ch != ' ' && sy >= 0 && sy < height && sx >= 0 && sx < width)
+                    int sx = textX - (local_ascii[by].size()/2) + bx;
+                    if (ch != ' ' && sy>=0 && sy<height && sx>=0 && sx<width)
                         buffer[sy][sx] = ch;
                 }
             }
         }
 
         string combined;
-        for (auto &line : buffer) combined += line + "\n";
+        for (auto &line: buffer) combined += line + "\n";
 
         {
             lock_guard<mutex> lock(marquee_display_mutex);
@@ -197,14 +196,13 @@ void marquee_logic_thread_func(int width, int height) {
     }
 }
 
+// ---------------- display thread ----------------
 void display_thread_func() {
     const int REFRESH_RATE = 50;
     const int MESSAGE_LINES = 8;
 
     while (::is_running) {
-        string marquee_copy;
-        string prompt_copy;
-        string message_copy;
+        string marquee_copy, prompt_copy, message_copy;
 
         {
             lock_guard<mutex> lock(marquee_display_mutex);
@@ -219,29 +217,27 @@ void display_thread_func() {
             message_copy = message_text;
         }
 
-        // Clear screen and move to top
-        cout << "\033[H";
+        cout << "\033[H"; // reset cursor
 
-        // Wave / marquee
+        // Wave animation
         cout << marquee_copy;
 
         // Dev info
-        cout << "\033[KGroup developers:\n";
-        cout << "\033[K" << "Liam Michael Alain B. Ancheta\n";
-        cout << "\033[K" << "Nicole Jia Ying S. Shi\n";
-        cout << "\033[K" << "Rafael Luis L. Navarro\n";
-        cout << "\033[K" << "Reuchlin Charles S. Faustino\n";
+        cout << "Group developers:\n";
+        cout << "Liam Michael Alain B. Ancheta\n";
+        cout << "Nicole Jia Ying S. Shi\n";
+        cout << "Rafael Luis L. Navarro\n";
+        cout << "Reuchlin Charles S. Faustino\n\n";
 
         // Ver info
-        cout << "\n\033[KVersion date: 2025-09-24\n\n";
+        cout << "Version date: 2025-09-24\n\n";
 
-        // Message area (use reserve space)
+        // Messages
         for (int i = 0; i < MESSAGE_LINES; ++i) {
             cout << "\033[K\n";
         }
-        cout << "\033[" << MESSAGE_LINES << "A";  // Cursor upsies
+        cout << "\033[" << MESSAGE_LINES << "A";
 
-        // Print 
         if (!message_copy.empty()) {
             cout << message_copy;
             if (message_copy.back() != '\n') cout << '\n';
@@ -249,7 +245,7 @@ void display_thread_func() {
             cout << "\n";
         }
 
-        // 5) Command line 
+        // Prompt
         cout << "\n";
         if (clear_dat_stuff) {
             cout << "\033[K";
@@ -261,6 +257,7 @@ void display_thread_func() {
     }
 }
 
+// ---------------- helpers ----------------
 vector<string> extractCommand(const string cmd) {
     stringstream ss(cmd);
     string word;
@@ -287,8 +284,9 @@ void help_option() {
     );
 }
 
+// ---------------- main ----------------
 int main() {
-    cout << "\033[2J\033[H";
+    cout << "\033[2J\033[H"; // clear screen
 
     auto font = loadFont("characters.txt");
     {
@@ -322,19 +320,12 @@ int main() {
             }
 
             if (cmd == "exit") {
-                {
-                    lock_guard<mutex> lock(message_mutex);
-                    message_text = "Exiting...\n";
-                }
+                setMessage("Exiting...\n");
                 is_running = false;
                 break;
             }
-            else if (cmd == "help") {
-                help_option();
-            }
-            else if (cmd == "clear") {
-                setMessage("");
-            }
+            else if (cmd == "help") help_option();
+            else if (cmd == "clear") setMessage("");
             else if (cmd == "start_marquee") {
                 is_stop = false;
                 setMessage("Marquee started\n");
@@ -354,9 +345,9 @@ int main() {
             else if (cmd.rfind("set_speed", 0) == 0) {
                 auto parts = extractCommand(cmd);
                 if (parts.size() > 1) {
-                    lock_guard<mutex> lock(speed_mutex);
+                    lock_guard<mutex> speed_lock(speed_mutex);
                     ::speed = stoi(parts[1]);
-                    setMessage("Speed set to: " + parts[1] + " (usleep microseconds)\n");
+                    setMessage("Speed set to: " + parts[1] + "\n");
                 } else {
                     setMessage("Usage: set_speed <microseconds>\n");
                 }
