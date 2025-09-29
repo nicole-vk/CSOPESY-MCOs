@@ -15,6 +15,7 @@ using namespace std;
 
 bool is_running = true;
 bool is_stop = false;
+bool is_first_run = true;
 atomic<bool> clear_dat_stuff(false);
 atomic<bool> gotta_clear_dat_ascii(false);
 
@@ -191,6 +192,9 @@ void marquee_logic_thread_func(int width, int height) {
             marquee_display_buffer = combined;
         }
 
+        if(is_first_run)
+            continue;
+
         t += 0.5;
         usleep(speed);
     }
@@ -328,6 +332,7 @@ int main() {
             else if (cmd == "clear") setMessage("");
             else if (cmd == "start_marquee") {
                 is_stop = false;
+                is_first_run = false;
                 setMessage("Marquee started\n");
             }
             else if (cmd == "stop_marquee") {
