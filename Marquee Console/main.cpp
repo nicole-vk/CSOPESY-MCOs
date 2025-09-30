@@ -234,7 +234,7 @@ void display_thread_func() {
         cout << "Reuchlin Charles S. Faustino\n\n";
 
         // Ver info
-        cout << "Version date: 2025-09-24\n\n";
+        cout << "Version date: 2025-10-01\n\n";
 
         // Messages
         for (int i = 0; i < MESSAGE_LINES; ++i) {
@@ -326,10 +326,9 @@ int main() {
             if (cmd == "exit") {
                 setMessage("Exiting...\n");
                 is_running = false;
-                break;
+                exit(0);
             }
             else if (cmd == "help") help_option();
-            else if (cmd == "clear") setMessage("");
             else if (cmd == "start_marquee") {
                 is_stop = false;
                 is_first_run = false;
