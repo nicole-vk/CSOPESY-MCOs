@@ -8,6 +8,9 @@ NAVARRO, RAFAEL LUIS LIM
 SHI, NICOLE JIA YING SHI
 
 # Marquee Console
+# Location of the Source Code
+Source Code, main.cpp, is located inside the Marquee Console folder.
+
 ## Install MinGW-w64 g++ in MSYS2
 Open msys2.exe and run:
 
