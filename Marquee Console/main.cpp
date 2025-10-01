@@ -345,7 +345,7 @@ int main() {
                 auto parts = extractCommand(cmd);
                 if (parts.size() > 1) {
                     lock_guard<mutex> speed_lock(speed_mutex);
-                    ::speed = stoi(parts[1]);
+                    ::speed = stoi(parts[1]) * 80;
                     setMessage("Speed set to: " + parts[1] + "\n");
                 } else {
                     setMessage("Usage: set_speed <microseconds>\n");
