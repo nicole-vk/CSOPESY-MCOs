@@ -1,5 +1,15 @@
 # Marquee Console
 
+## Group Members
+ANCHETA, LIAM MICHAEL ALAIN
+
+FAUSTINO, REUCHLIN CHARLES SURATOS
+
+NAVARRO, RAFAEL LUIS LIM
+
+SHI, NICOLE JIA YING SHI
+
+
 ## Install MinGW-w64 g++ in MSYS2
 Open msys2.exe and run:
 
