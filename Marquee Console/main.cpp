@@ -10,6 +10,7 @@
 #include <map>
 #include <string>
 #include <unistd.h>
+#include <conio.h> 
 
 using namespace std;
 
@@ -37,6 +38,9 @@ mutex ascii_text_mutex;
 // global message buffer
 string message_text;
 mutex message_mutex;
+
+string command_line;
+mutex command_line_mutex;
 
 // ---------------- font loader ----------------
 map<char, vector<string>> loadFont(const string filename) {
@@ -94,51 +98,41 @@ vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     return result;
 }
 
+// handling this was almost my 13th reason - L
 // ---------------- keyboard handler ----------------
 void keyboard_handler_thread_func() {
-    string command_line;
-
     while (::is_running) {
-        int ci = cin.get();
-        if (ci == EOF) break;
-        char c = static_cast<char>(ci);
+        if (_kbhit()) {           // Literally if a key is hit
+            char c = _getch();    // Read a single character
 
-        if (c == '\033') { // escape sequences
-            if (cin.peek() != EOF) cin.get();
-            if (cin.peek() != EOF) cin.get();
-            continue;
-        }
+            //Checking for special keys (Arrow/Func Keys)
+            if (c ==0 || c == -32) {
+                _getch();   // Discard the Second Byte
+                continue;   // Go to the Next Loop
+            }
 
-        if (c == '\n') {  // enter
-            if (!command_line.empty()) {
+            if (c == '\r') {      // Enter Key
+                string cmd;
                 {
-                    lock_guard<mutex> lock(command_queue_mutex);
-                    command_queue.push(command_line);
+                    lock_guard<mutex> lock(command_line_mutex);
+                    cmd = command_line;
+                    command_line.clear(); // Clear for next command
                 }
-                command_line.clear();
+                if (!cmd.empty()) {
+                    lock_guard<mutex> lock(command_queue_mutex);
+                    command_queue.push(cmd);
+                }
             }
-            {
-                lock_guard<mutex> lock(prompt_mutex);
-                prompt_display_buffer = "Command > ";
+            else if (c == 8) {    // Backspace Key
+                lock_guard<mutex> lock(command_line_mutex);
+                if (!command_line.empty()) command_line.pop_back();
             }
-            clear_dat_stuff = true;
-        }
-        else if (c == 127 || c == 8) { // backspace
-            if (!command_line.empty()) {
-                command_line.pop_back();
-            }
-            {
-                lock_guard<mutex> lock(prompt_mutex);
-                prompt_display_buffer = "Command > " + command_line;
+            else if (isprint(static_cast<unsigned char>(c))) {
+                lock_guard<mutex> lock(command_line_mutex);
+                command_line.push_back(c);
             }
         }
-        else if (isprint(static_cast<unsigned char>(c))) {
-            command_line.push_back(c);
-            {
-                lock_guard<mutex> lock(prompt_mutex);
-                prompt_display_buffer = "Command > " + command_line;
-            }
-        }
+        this_thread::sleep_for(chrono::milliseconds(10));
     }
 }
 
@@ -206,19 +200,24 @@ void display_thread_func() {
     const int MESSAGE_LINES = 8;
 
     while (::is_running) {
-        string marquee_copy, prompt_copy, message_copy;
+        string marquee_copy, message_copy, current_line;
 
+        // copy marquee buffer
         {
             lock_guard<mutex> lock(marquee_display_mutex);
             marquee_copy = marquee_display_buffer;
         }
-        {
-            lock_guard<mutex> lock(prompt_mutex);
-            prompt_copy = prompt_display_buffer;
-        }
+
+        // copy message buffer
         {
             lock_guard<mutex> lock(message_mutex);
             message_copy = message_text;
+        }
+
+        // copy current typing line
+        {
+            lock_guard<mutex> lock(command_line_mutex);
+            current_line = command_line;
         }
 
         cout << "\033[H"; // reset cursor
@@ -249,13 +248,9 @@ void display_thread_func() {
             cout << "\n";
         }
 
-        // Prompt
-        cout << "\n";
-        if (clear_dat_stuff) {
-            cout << "\033[K";
-            clear_dat_stuff = false;
-        }
-        cout << prompt_copy << flush;
+        // Prompt line: display live typing
+        cout << "\n\033[K";  // move to new line and clear it
+        cout << "Command > " << current_line << flush;
 
         this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
     }
