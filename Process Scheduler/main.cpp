@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <conio.h> 
 
+#include "MC01.h"
+
 using namespace std;
 
 bool is_running = true;
@@ -238,8 +240,14 @@ void display_thread_func() {
         // Messages
         for (int i = 0; i < MESSAGE_LINES; ++i) {
             cout << "\033[K\n";
-        }
+        }        
         cout << "\033[" << MESSAGE_LINES << "A";
+
+        // Prompt line: display live typing
+        cout << "\n\033[K";  // move to new line and clear it
+        cout << "Command > " << current_line << flush;
+        cout << "\n\033[K";
+        cout << "\n\033[K";
 
         if (!message_copy.empty()) {
             cout << message_copy;
@@ -247,10 +255,6 @@ void display_thread_func() {
         } else {
             cout << "\n";
         }
-
-        // Prompt line: display live typing
-        cout << "\n\033[K";  // move to new line and clear it
-        cout << "Command > " << current_line << flush;
 
         this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
     }
@@ -287,6 +291,8 @@ void help_option() {
 int main() {
     cout << "\033[2J\033[H"; // clear screen
 
+    MC01::init_module();   // does not read config until "initialize" command
+
     auto font = loadFont("characters.txt");
     {
         lock_guard<mutex> lock(ascii_text_mutex);
@@ -319,6 +325,7 @@ int main() {
             }
 
             if (cmd == "exit") {
+                MC01::shutdown_module();
                 setMessage("Exiting...\n");
                 is_running = false;
                 exit(0);
@@ -352,7 +359,9 @@ int main() {
                 }
             }
             else {
-                setMessage("Command not found. Please check the 'help' option.\n");
+                if (!MC01::handle_command(cmd)) {
+                    setMessage("Command not found. Please check the 'help' option.\n");
+                }
             }
         }
 
