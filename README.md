@@ -24,7 +24,14 @@ After installing, close msys2.exe and open mingw64.exe. Now check if g++ is ther
      > g++ --version
 
 ### Compile and Run
+#### Marquee Console
 
      > g++ main.cpp -o main.exe
 
      > ./main.exe
+
+#### Process Scheduler
+
+     >  g++ main.cpp MC01.cpp -o project.exe -std=c++17 -pthread
+
+     > ./project.exe
