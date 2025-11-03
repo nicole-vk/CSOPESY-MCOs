@@ -25,7 +25,7 @@ atomic<bool> gotta_clear_dat_ascii(false);
 int speed;
 mutex speed_mutex;
 
-string prompt_display_buffer = "Command > ";
+string prompt_display_buffer = "root > ";
 mutex prompt_mutex;
 
 queue<string> command_queue;
@@ -245,7 +245,7 @@ void display_thread_func() {
 
         // Prompt line: display live typing
         cout << "\n\033[K";  // move to new line and clear it
-        cout << "Command > " << current_line << flush;
+        cout << "root > " << current_line << flush;
         cout << "\n\033[K";
         cout << "\n\033[K";
 
