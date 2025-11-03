@@ -190,6 +190,9 @@ namespace MC01 {
             p->ip++;
         }
 
+        if (config.delays_per_exec > 0)
+            this_thread::sleep_for(std::chrono::milliseconds(config.delays_per_exec));
+
         if (p->ip >= p->instructions.size()) p->state = P_FINISHED;
     }
 
