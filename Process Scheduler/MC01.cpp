@@ -75,11 +75,15 @@ mutex stats_mutex;
 uint64_t total_executed_instructions = 0;
 uint64_t total_processes_created = 0;
 
-std::mt19937 rng((uint32_t)chrono::high_resolution_clock::now().time_since_epoch().count());
+mt19937 rng((uint32_t)chrono::high_resolution_clock::now().time_since_epoch().count());
 
-// core busy flags (NOT atomic<bool> to avoid move/copy issues)
-vector<char> core_busy; // 0 or 1 per core
+// core busy flags (use char to avoid atomic move issues)
+vector<char> core_busy;
 atomic<uint64_t> busy_core_count(0);
+
+// utilization tracking
+atomic<uint64_t> total_busy_ticks(0);
+atomic<uint64_t> total_ticks_elapsed(0);
 
 // ---------------- Helpers ----------------
 static string trim(const string &s) {
@@ -107,7 +111,7 @@ static uint32_t clamp_uint16(int64_t v) {
 static Instr make_PRINT(const string &msg){ Instr i; i.opcode="PRINT"; i.args={msg}; return i; }
 static Instr make_ADD(const string &d,const string &a,const string &b){ Instr i; i.opcode="ADD"; i.args={d,a,b}; return i; }
 
-// produce alternating PRINT / ADD instructions; PRINT prints "Hello world from <pname>!"
+// alternating PRINT/ADD with Hello world output
 static vector<Instr> random_instructions_for(const string &pname) {
     uniform_int_distribution<int> d(config.min_ins, config.max_ins);
     int n = d(rng);
@@ -131,7 +135,7 @@ shared_ptr<Process> create_process(const string &name) {
         p->name = name;
     }
 
-    p->vars["x"] = 0; // spec: initialize x = 0
+    p->vars["x"] = 0;
     p->instructions = random_instructions_for(p->name);
 
     {
@@ -146,7 +150,6 @@ shared_ptr<Process> create_process(const string &name) {
         ready_queue.push_back(p->pid);
     }
     ready_cv.notify_one();
-
     return p;
 }
 
@@ -218,13 +221,14 @@ void cpu_worker(int cid) {
             p->state = P_RUNNING;
         }
 
-        // mark core busy (cid is unique to this worker thread)
         if (cid >= 0 && cid < (int)core_busy.size()) {
             if (core_busy[cid] == 0) {
                 core_busy[cid] = 1;
                 busy_core_count.fetch_add(1, std::memory_order_relaxed);
             }
         }
+
+        total_busy_ticks.fetch_add(1, std::memory_order_relaxed);
 
         if (config.scheduler == "rr") {
             for (uint64_t i = 0; i < config.quantum_cycles; i++) {
@@ -247,7 +251,6 @@ void cpu_worker(int cid) {
             if (p->state == P_READY) ready_queue.push_back(pid);
         }
 
-        // unmark core busy
         if (cid >= 0 && cid < (int)core_busy.size()) {
             if (core_busy[cid] == 1) {
                 core_busy[cid] = 0;
@@ -264,6 +267,8 @@ void scheduler_loop() {
             lock_guard<mutex> lk(tick_mutex);
             cpu_tick++;
         }
+
+        total_ticks_elapsed.fetch_add(1, std::memory_order_relaxed);
 
         if (generator_running && config.batch_process_freq > 0 && cpu_tick % config.batch_process_freq == 0) {
             int pid;
@@ -294,10 +299,10 @@ bool read_config_file(const string &fn) {
             if (k == "num-cpu") config.num_cpu = max(1, stoi(v));
             else if (k == "scheduler") config.scheduler = v;
             else if (k == "quantum-cycles") config.quantum_cycles = max(1ULL, stoull(v));
-            else if (k == "batch-process-freq" || k == "batch-process_freq") config.batch_process_freq = max(1ULL, stoull(v));
+            else if (k == "batch-process-freq") config.batch_process_freq = max(1ULL, stoull(v));
             else if (k == "min-ins") config.min_ins = stoi(v);
             else if (k == "max-ins") config.max_ins = stoi(v);
-            else if (k == "delays-per-exec" || k == "delay-per-exec") config.delays_per_exec = stoull(v);
+            else if (k == "delays-per-exec") config.delays_per_exec = stoull(v);
         } catch (...) {}
     }
     return true;
@@ -335,17 +340,14 @@ bool handle_command(const string &cmd) {
 
         initialized = true;
         stop_all = false;
-        // prepare core_busy
         core_busy.assign(config.num_cpu, 0);
         busy_core_count.store(0);
+        total_busy_ticks.store(0);
+        total_ticks_elapsed.store(0);
 
-        // spawn scheduler thread
         if (!scheduler_thread.joinable()) scheduler_thread = thread(scheduler_loop);
-
-        // spawn cpu workers
-        for (uint32_t i = 0; i < config.num_cpu; ++i) {
+        for (uint32_t i = 0; i < config.num_cpu; ++i)
             cpu_workers.emplace_back(cpu_worker, (int)i);
-        }
 
         setMessage("Process scheduler initialized\n");
         return true;
@@ -359,7 +361,13 @@ bool handle_command(const string &cmd) {
         stringstream ss;
         uint64_t busy = busy_core_count.load();
         if (busy > config.num_cpu) busy = config.num_cpu;
-        double util = (config.num_cpu > 0) ? (100.0 * (double)busy / (double)config.num_cpu) : 0.0;
+
+        uint64_t elapsed = total_ticks_elapsed.load();
+        uint64_t busy_t = total_busy_ticks.load();
+        double util = 0.0;
+        if (elapsed > 0 && config.num_cpu > 0)
+            util = 100.0 * ((double)busy_t / (double)(elapsed * config.num_cpu));
+        if (util > 100.0) util = 100.0;
 
         ss << "=== SCREEN - LIST ===\n";
         ss << "CPU utilization: " << fixed << setprecision(2) << util << "%\n";
@@ -386,6 +394,9 @@ bool handle_command(const string &cmd) {
         ss << "\nFinished processes (last 20):\n";
         for (auto &p : finished)
             ss << p->name << "  Finished " << p->instructions.size() << " / " << p->instructions.size() << "\n";
+
+        total_busy_ticks.store(0);
+        total_ticks_elapsed.store(0);
 
         setMessage(ss.str());
         return true;
@@ -416,7 +427,13 @@ bool handle_command(const string &cmd) {
         stringstream ss;
         uint64_t busy = busy_core_count.load();
         if (busy > config.num_cpu) busy = config.num_cpu;
-        double util = (config.num_cpu > 0) ? (100.0 * (double)busy / (double)config.num_cpu) : 0.0;
+
+        uint64_t elapsed = total_ticks_elapsed.load();
+        uint64_t busy_t = total_busy_ticks.load();
+        double util = 0.0;
+        if (elapsed > 0 && config.num_cpu > 0)
+            util = 100.0 * ((double)busy_t / (double)(elapsed * config.num_cpu));
+        if (util > 100.0) util = 100.0;
 
         ss << "=== CPU UTILIZATION REPORT ===\n";
         ss << "CPU utilization: " << fixed << setprecision(2) << util << "%\n";
@@ -467,6 +484,8 @@ void init_module() {
     stop_all = false;
     core_busy.clear();
     busy_core_count.store(0);
+    total_busy_ticks.store(0);
+    total_ticks_elapsed.store(0);
 }
 
 } // namespace MC01
