@@ -55,6 +55,8 @@ namespace MC01 {
         ProcState state = P_READY;
         uint64_t wake_tick = 0;
         mutex m;
+        chrono::system_clock::time_point start_time;
+        int current_core = -1; // Which core it's running on (-1 if not running)
     };
 
     mutex processes_mutex;
@@ -106,6 +108,19 @@ namespace MC01 {
         if (v < 0) return 0;
         if (v > 0xFFFF) return 0xFFFF;
         return (uint32_t)v;
+    }
+
+    static string format_time(const chrono::system_clock::time_point &tp) {
+    time_t t = chrono::system_clock::to_time_t(tp);
+    struct tm tm;
+    #ifdef _WIN32
+        localtime_s(&tm, &t);
+    #else
+        localtime_r(&t, &tm);
+    #endif
+        char b[64];
+        strftime(b, sizeof(b), "(%m/%d/%Y %I:%M:%S%p)", &tm);
+        return string(b);
     }
 
     // Instruction constructors
@@ -234,7 +249,7 @@ namespace MC01 {
 
         p->vars["x"] = 0;
         p->instructions = random_instructions_for(p->name);
-
+        p->start_time = chrono::system_clock::now();
         {
             lock_guard<mutex> lk(processes_mutex);
             processes_by_pid[p->pid] = p;
@@ -382,6 +397,7 @@ namespace MC01 {
                 lock_guard<mutex> lk(p->m);
                 if (p->state == P_FINISHED || p->state == P_SLEEPING) continue;
                 p->state = P_RUNNING;
+                p->current_core = cid;
             }
 
             if (cid >= 0 && cid < (int)core_busy.size()) {
@@ -406,7 +422,10 @@ namespace MC01 {
 
             {
                 lock_guard<mutex> lk(p->m);
-                if (p->state == P_RUNNING) p->state = P_READY;
+                if (p->state == P_RUNNING) { 
+                    p->state = P_READY;
+                    p->current_core = -1;
+                }
             }
 
             {
@@ -595,12 +614,19 @@ namespace MC01 {
             if (finished.size() > 10) finished.erase(finished.begin(), finished.end() - 10);
 
             ss << "Running processes (latest 10):\n";
-            for (auto &p : running)
-                ss << p->name << "  " << p->ip << " / " << p->instructions.size() << "\n";
+            for (auto &p : running) {
+                string core_display = (p->current_core >=0) ? to_string(p->current_core) : "-";
+                string ts = format_time(p->start_time);
+                ss << p->name << "  " << ts << "  Core: " << core_display
+                << "  " << p->ip << " / " << p->instructions.size() << "\n";
+            }
 
             ss << "\nFinished processes (latest 10):\n";
-            for (auto &p : finished)
-                ss << p->name << "  Finished " << p->instructions.size() << " / " << p->instructions.size() << "\n";
+            for (auto &p : finished) {
+                string ts = format_time(p->start_time);
+                ss << p->name << "  " << ts << "  Finished  "
+                << p->instructions.size() << " / " << p->instructions.size() << "\n";
+            }
 
             total_busy_ticks.store(0);
             total_ticks_elapsed.store(0);
@@ -648,9 +674,13 @@ namespace MC01 {
                 for (auto &kv : processes_by_pid) {
                     auto p = kv.second;
                     lock_guard<mutex> pl(p->m);
-                    if (p->state != P_FINISHED)
-                        ss << p->name << "  " << p->ip << " / " << p->instructions.size() << "\n";
-                    else finished.push_back(p);
+                    if (p->state != P_FINISHED) {
+                        string core_display = (p->current_core >=0) ? to_string(p->current_core) : "-";
+                        string ts = format_time(p->start_time);
+                        ss << p->name << "  " << ts << "  Core: " << core_display
+                        << "  " << p->ip << " / " << p->instructions.size() << "\n";
+                    }
+                        else finished.push_back(p);
                 }
             }
 
