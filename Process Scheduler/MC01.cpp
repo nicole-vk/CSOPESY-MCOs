@@ -157,6 +157,7 @@ namespace MC01 {
     void exec_inst(shared_ptr<Process> p,int cid) {
         lock_guard<mutex> lk(p->m);
         if (p->state == P_FINISHED || p->ip >= p->instructions.size()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1)); // very small artificial delay
             p->state = P_FINISHED;
             return;
         }
@@ -199,6 +200,12 @@ namespace MC01 {
     
     void cpu_worker(int cid) {
         while (!stop_all) {
+
+            if (!generator_running){
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+
             int pid = -1;
             {
                 unique_lock<mutex> lk(ready_mutex);
@@ -273,16 +280,21 @@ namespace MC01 {
 
             total_ticks_elapsed.fetch_add(1, std::memory_order_relaxed);
 
-            if (generator_running && config.batch_process_freq > 0 && cpu_tick % config.batch_process_freq == 0) {
+            if (generator_running && config.batch_process_freq > 0 && cpu_tick % config.batch_process_freq == 0) { 
                 int pid;
                 {
                     lock_guard<mutex> lk(processes_mutex);
                     pid = next_pid;
                 }
                 create_process("auto-" + to_string(pid));
+
+
+                // Brief Delay for Checking CPU Utilization
+                if (rng() % 5 == 0) { 
+                std::this_thread::sleep_for(std::chrono::milliseconds(200 + (rng() % 300)));
             }
 
-            this_thread::sleep_for(10ms);
+            this_thread::sleep_for(1ms); //slight change
         }
     }
 
@@ -314,10 +326,13 @@ namespace MC01 {
     
     string screen_get_attached_output(const string &process_name) {
         lock_guard<mutex> lock(processes_mutex);
-        if (!processes_by_name.count(process_name))
-            return "Process " + process_name + " not found.\n";
 
-        auto p = processes_by_name[process_name];
+        // Modified Iterator to check for nonexistent or finished processes
+        auto p_iterator = processes_by_name.find(process_name);
+        if (p_iterator == processes_by_name.end() || p_iterator->second->state == P_FINISHED)
+            return "Process " + process_name + " not found or finished.\n";
+        
+        auto p = p_iterator->second;
         lock_guard<mutex> pl(p->m);
 
         stringstream ss;
@@ -356,10 +371,15 @@ namespace MC01 {
             return true;
         }
         if (c == "scheduler-start") { 
-            generator_running = true; setMessage("Scheduler started\n"); return true; 
+            generator_running = true; 
+            create_process("auto-" + to_string(next_pid));  // Ensures immediate workload
+            setMessage("Scheduler started\n"); 
+            return true; 
         }
         if (c == "scheduler-stop") { 
-            generator_running = false; setMessage("Scheduler stopped\n"); return true; 
+            generator_running = false; 
+            setMessage("Scheduler stopped\n"); 
+            return true; 
         }
         if (c == "screen -ls") {
             stringstream ss;
