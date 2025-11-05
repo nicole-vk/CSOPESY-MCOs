@@ -516,7 +516,7 @@ namespace MC01 {
                         lock_guard<mutex> lk(processes_mutex);
                         pid = next_pid;
                     }
-                    create_process("auto-" + to_string(pid));
+                    create_process("auto-process" + to_string(pid));
                 }
             }
 
