@@ -696,33 +696,40 @@ namespace MC01 {
                 return true;
             }
 
+            bool exists = false;
             {
                 lock_guard<mutex> lk(processes_mutex);
-                if (processes_by_name.count(name)) {
-                    setMessage("Process already exists\n");
-                    return true;
-                }
+                exists = processes_by_name.count(name) > 0;
             }
 
+            if (exists) {
+                setMessage("Process already exists\n");
+                return true;
+            }
+
+            // Safe: no global locks held while creating process
             create_process(name);
             attached_process = name;
-            last_screen_s_process = name; 
+            last_screen_s_process = name;
+
             setMessage(screen_get_attached_output(name));
             return true;
         }
         if (c.rfind("screen -r ", 0) == 0) {
             string name = trim(c.substr(10));
+            shared_ptr<Process> p;
 
-            lock_guard<mutex> lk(processes_mutex);
-            if (!processes_by_name.count(name)) {
-                setMessage("Process " + name + " not found\n");
-                return true;
-            }
+            {
+                lock_guard<mutex> lk(processes_mutex);
+                if (!processes_by_name.count(name)) {
+                    setMessage("Process " + name + " not found\n");
+                    return true;
+                }
+                p = processes_by_name[name];
+            } // unlocks before next call
 
             attached_process = name;
-            string out = screen_get_attached_output(name);
-            setMessage(out);
-            
+            setMessage(screen_get_attached_output(name));
             return true;
         }
         if (c == "process-smi") {
