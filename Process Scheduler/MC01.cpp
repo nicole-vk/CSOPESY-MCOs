@@ -263,7 +263,7 @@ namespace MC01 {
 
         p->vars["x"] = 0;
 
-        // Special case for Scenario 4
+        // Special Case for that special Scenario 4
         if (name == "proc-01") {
             p->instructions = make_test_instructions_q4();
         } else {
@@ -560,7 +560,7 @@ namespace MC01 {
         ss << "Process name: " << p->name << "\n";
         ss << "ID: " << p->pid << "\n";
         if (p->name == "proc-01") {
-            // Show FIRST 20 logs for proc-01
+            // Show FIRST 20 logs for proc-01 only (just for that question lmao)
             ss << "Logs (Earliest 20 for Testing Purposes):\n";
             size_t end_index = min(p->logs.size(), (size_t)20);
             for (size_t i = 0; i < end_index; ++i) {
