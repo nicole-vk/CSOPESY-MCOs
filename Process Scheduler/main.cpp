@@ -334,10 +334,9 @@ int main() {
             }
 
             if (cmd == "exit") {
-                MC01::shutdown_module();
-                setMessage("Exiting...\n");
                 is_running = false;
-                exit(0);
+                is_stop = true;
+                break;
             }
             else if (cmd == "help") help_option();
             else if (cmd == "start_marquee") {
@@ -381,5 +380,6 @@ int main() {
     if (display_thread.joinable()) display_thread.join();
     if (keyboard_thread.joinable()) keyboard_thread.join();
 
+    cout << "\033[?25h";
     return 0;
 }

@@ -78,6 +78,10 @@ namespace MC01 {
     uint64_t total_executed_instructions = 0;
     uint64_t total_processes_created = 0;
 
+    string attached_process = "";
+    string last_screen_s_process = "";
+
+
     mt19937 rng((uint32_t)chrono::high_resolution_clock::now().time_since_epoch().count());
 
     // core busy flags
@@ -556,6 +560,8 @@ namespace MC01 {
         auto p = processes_by_name[process_name];
         lock_guard<mutex> pl(p->m);
 
+        auto logs = p->logs;
+
         stringstream ss;
         ss << "Process name: " << p->name << "\n";
         ss << "ID: " << p->pid << "\n";
@@ -577,6 +583,7 @@ namespace MC01 {
         ss << "\nCurrent instruction line: " << p->ip << "\n";
         ss << "Lines of code: " << p->instructions.size() << "\n";
         ss << "Variables:\n";
+        
         for (auto &kv : p->vars) ss << kv.first << " = " << kv.second << "\n";
         if (p->state == P_SLEEPING) {
             ss << "State: SLEEPING (wakes at tick " << p->wake_tick << ")\n";
@@ -592,6 +599,10 @@ namespace MC01 {
 
     bool handle_command(const string &cmd) {
         string c = trim(cmd);
+
+        // reset last_screen_s_process unless this is screen -s or process-smi trigger
+        if (!(c.rfind("screen -s ",0)==0) && c!="process-smi") 
+            last_screen_s_process.clear();
 
         if (c == "initialize") {
             if (initialized) { setMessage("Already initialized\n"); return true; }
@@ -680,20 +691,50 @@ namespace MC01 {
         }
         if (c.rfind("screen -s ", 0) == 0) {
             string name = trim(c.substr(10));
-            if (name.empty()) { setMessage("Invalid name\n"); return true; }
+            if (name.empty()) {
+                setMessage("Invalid process name\n");
+                return true;
+            }
+
             {
                 lock_guard<mutex> lk(processes_mutex);
-                if (processes_by_name.count(name)) { setMessage("Process already exists\n"); return true; }
+                if (processes_by_name.count(name)) {
+                    setMessage("Process already exists\n");
+                    return true;
+                }
             }
+
             create_process(name);
-            setMessage("Process " + name + " created\n");
+            attached_process = name;
+            last_screen_s_process = name; 
+            setMessage(screen_get_attached_output(name));
             return true;
         }
         if (c.rfind("screen -r ", 0) == 0) {
             string name = trim(c.substr(10));
-            setMessage(screen_get_attached_output(name));
+
+            lock_guard<mutex> lk(processes_mutex);
+            if (!processes_by_name.count(name)) {
+                setMessage("Process " + name + " not found\n");
+                return true;
+            }
+
+            attached_process = name;
+            string out = screen_get_attached_output(name);
+            setMessage(out);
+            
             return true;
         }
+        if (c == "process-smi") {
+            if (last_screen_s_process.empty()) {
+                setMessage("Error: process-smi is only valid immediately after screen -s\n");
+                return true;
+            }
+            setMessage(screen_get_attached_output(last_screen_s_process));
+            last_screen_s_process.clear(); 
+            return true;
+        }
+
         if (c == "report-util") {
             stringstream ss;
             uint64_t elapsed = total_ticks_elapsed.load();
@@ -737,6 +778,10 @@ namespace MC01 {
             logFile.close();
 
             setMessage("Report written to csopesy-log.txt\n");
+            return true;
+        }
+        if (c == "exit") {
+            MC01::shutdown_module();
             return true;
         }
 
