@@ -201,6 +201,9 @@ void display_thread_func() {
     const int REFRESH_RATE = 50;
     const int MESSAGE_LINES = 8;
 
+    // hide cursor for nicer updates 
+    cout << "\033[?25l";
+
     while (::is_running) {
         string marquee_copy, message_copy, current_line;
 
@@ -256,8 +259,14 @@ void display_thread_func() {
             cout << "\n";
         }
 
+        // literally just ensure no trailing garbage after our content
+        cout << "\033[J" << flush;
+
         this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
     }
+
+    // restore cursor visibility
+    cout << "\033[?25h";
 }
 
 // ---------------- helpers ----------------
