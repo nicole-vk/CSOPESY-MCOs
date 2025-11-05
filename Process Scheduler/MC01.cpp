@@ -600,8 +600,7 @@ namespace MC01 {
     bool handle_command(const string &cmd) {
         string c = trim(cmd);
 
-        // reset last_screen_s_process unless this is screen -s or process-smi trigger
-        if (!(c.rfind("screen -s ",0)==0) && c!="process-smi") 
+        if (attached_process.empty() && !(c.rfind("screen -s ",0)==0) && c != "process-smi" && c != "exit")
             last_screen_s_process.clear();
 
         if (c == "initialize") {
@@ -788,9 +787,16 @@ namespace MC01 {
             return true;
         }
         if (c == "exit") {
-            MC01::shutdown_module();
-            return true;
+            if (!attached_process.empty()) {
+                attached_process.clear();
+                last_screen_s_process.clear();
+                return true;
+            }
+
+            
+            return false; // allow main() to exit program
         }
+
 
         return false;
     }

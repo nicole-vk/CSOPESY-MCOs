@@ -334,6 +334,12 @@ int main() {
             }
 
             if (cmd == "exit") {
+                bool handled = MC01::handle_command("exit");
+                if (handled) {
+                    continue;
+                }
+
+                // exit program
                 is_running = false;
                 is_stop = true;
                 break;
