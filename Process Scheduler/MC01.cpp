@@ -186,6 +186,20 @@ namespace MC01 {
         return out;
     }
 
+    // Question 4 Scenario
+    static vector<Instr> make_test_instructions_q4() {
+        vector<Instr> out;
+        uniform_int_distribution<int> add_val(1, 10);
+        // 50,000 pairs = 100,000 instructions
+        for (int i = 0; i < 50000; ++i) {
+            // PRINT the VALUE of x (not a static string)
+            out.push_back(make_PRINT("Value from: x")); // We'll interpret "x" specially
+            // ADD
+            out.push_back(make_ADD("x", "x", to_string(add_val(rng))));
+        }
+        return out;
+    }
+
     // Random instruction generation with support for FOR, DECLARE, SUBTRACT, SLEEP
     static vector<Instr> random_instructions_for(const string &pname) {
         uniform_int_distribution<int> d(config.min_ins, config.max_ins);
@@ -238,7 +252,7 @@ namespace MC01 {
         }
         return out;
     }
-
+    
     shared_ptr<Process> create_process(const string &name) {
         auto p = make_shared<Process>();
         {
@@ -248,7 +262,13 @@ namespace MC01 {
         }
 
         p->vars["x"] = 0;
-        p->instructions = random_instructions_for(p->name);
+
+        // Special case for Scenario 4
+        if (name == "proc-01") {
+            p->instructions = make_test_instructions_q4();
+        } else {
+            p->instructions = random_instructions_for(p->name);
+        }
         p->start_time = chrono::system_clock::now();
         {
             lock_guard<mutex> lk(processes_mutex);
@@ -276,18 +296,30 @@ namespace MC01 {
         auto &in = p->instructions[p->ip];
 
         if (in.opcode == "PRINT") {
+            string msg_template = in.args[0];
+            string final_msg = msg_template;
+
+            // Special handling for "Value from: x"
+            if (msg_template == "Value from: x") {
+                uint32_t x_val = 0;
+                if (p->vars.count("x")) {
+                    x_val = p->vars["x"];
+                }
+                final_msg = "Value from: " + to_string(x_val);
+            }
+
             auto now = chrono::system_clock::now();
             time_t t = chrono::system_clock::to_time_t(now);
             struct tm tm;
-    #ifdef _WIN32
+        #ifdef _WIN32
             localtime_s(&tm, &t);
-    #else
+        #else
             localtime_r(&t, &tm);
-    #endif
+        #endif
             char b[64];
             strftime(b, sizeof(b), "(%m/%d/%Y %I:%M:%S%p)", &tm);
             ostringstream msg;
-            msg << b << " Core:" << cid << " \"" << in.args[0] << "\"";
+            msg << b << " Core:" << cid << " \"" << final_msg << "\"";
             p->logs.push_back(msg.str());
             p->ip++;
         }
@@ -527,9 +559,21 @@ namespace MC01 {
         stringstream ss;
         ss << "Process name: " << p->name << "\n";
         ss << "ID: " << p->pid << "\n";
-        ss << "Logs:\n";
-        for (auto &log : p->logs)
-            ss << log << "\n";
+        if (p->name == "proc-01") {
+            // Show FIRST 20 logs for proc-01
+            ss << "Logs (Earliest 20 for Testing Purposes):\n";
+            size_t end_index = min(p->logs.size(), (size_t)20);
+            for (size_t i = 0; i < end_index; ++i) {
+                ss << p->logs[i] << "\n";
+            }
+        } else {
+            ss << "Logs (Latest 10):\n";
+            // Show LAST 10 logs for all other processes
+            size_t start_index = (p->logs.size() > 10) ? p->logs.size() - 10 : 0;
+            for (size_t i = start_index; i < p->logs.size(); ++i) {
+                ss << p->logs[i] << "\n";
+            }
+        }
         ss << "\nCurrent instruction line: " << p->ip << "\n";
         ss << "Lines of code: " << p->instructions.size() << "\n";
         ss << "Variables:\n";
