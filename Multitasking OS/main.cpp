@@ -12,15 +12,13 @@
 #include <unistd.h>
 #include <conio.h> 
 
-#include "MC01.h"
+#include "final.h"
 
 using namespace std;
 
 bool is_running = true;
 bool is_stop = false;
 bool is_first_run = true;
-atomic<bool> clear_dat_stuff(false);
-atomic<bool> gotta_clear_dat_ascii(false);
 
 int speed;
 mutex speed_mutex;
@@ -37,7 +35,6 @@ mutex marquee_display_mutex;
 vector<string> ascii_text;
 mutex ascii_text_mutex;
 
-// global message buffer
 string message_text;
 mutex message_mutex;
 
@@ -100,32 +97,30 @@ vector<string> makeAscii(const string text, map<char, vector<string>> font) {
     return result;
 }
 
-// handling this was almost my 13th reason - L
 // ---------------- keyboard handler ----------------
 void keyboard_handler_thread_func() {
     while (::is_running) {
-        if (_kbhit()) {           // Literally if a key is hit
-            char c = _getch();    // Read a single character
+        if (_kbhit()) {
+            char c = _getch();
 
-            //Checking for special keys (Arrow/Func Keys)
-            if (c ==0 || c == -32) {
-                _getch();   // Discard the Second Byte
-                continue;   // Go to the Next Loop
+            if (c == 0 || c == -32) {
+                _getch();
+                continue;
             }
 
-            if (c == '\r') {      // Enter Key
+            if (c == '\r') {
                 string cmd;
                 {
                     lock_guard<mutex> lock(command_line_mutex);
                     cmd = command_line;
-                    command_line.clear(); // Clear for next command
+                    command_line.clear();
                 }
                 if (!cmd.empty()) {
                     lock_guard<mutex> lock(command_queue_mutex);
                     command_queue.push(cmd);
                 }
             }
-            else if (c == 8) {    // Backspace Key
+            else if (c == 8) {
                 lock_guard<mutex> lock(command_line_mutex);
                 if (!command_line.empty()) command_line.pop_back();
             }
@@ -150,7 +145,6 @@ void marquee_logic_thread_func(int width, int height) {
 
         vector<string> buffer(height, string(width, ' '));
 
-        // wave animation
         for (int x = 0; x < width; x++) {
             float wave = 3*sin(0.12*x+t) + 2*sin(0.07*x + t*1.3);
             int waveY = int(wave + height/2);
@@ -159,7 +153,6 @@ void marquee_logic_thread_func(int width, int height) {
             for (int y=waveY+2; y<waveY+7 && y<height; y++) buffer[y][x] = '.';
         }
 
-        // ascii overlay
         vector<string> local_ascii;
         {
             lock_guard<mutex> lock(ascii_text_mutex);
@@ -201,53 +194,43 @@ void display_thread_func() {
     const int REFRESH_RATE = 50;
     const int MESSAGE_LINES = 8;
 
-    // hide cursor for nicer updates 
     cout << "\033[?25l";
 
     while (::is_running) {
         string marquee_copy, message_copy, current_line;
 
-        // copy marquee buffer
         {
             lock_guard<mutex> lock(marquee_display_mutex);
             marquee_copy = marquee_display_buffer;
         }
 
-        // copy message buffer
         {
             lock_guard<mutex> lock(message_mutex);
             message_copy = message_text;
         }
 
-        // copy current typing line
         {
             lock_guard<mutex> lock(command_line_mutex);
             current_line = command_line;
         }
 
-        cout << "\033[H"; // reset cursor
-
-        // Wave animation
+        cout << "\033[H";
         cout << marquee_copy;
 
-        // Dev info
         cout << "Group developers:\n";
         cout << "Liam Michael Alain B. Ancheta\n";
         cout << "Nicole Jia Ying S. Shi\n";
         cout << "Rafael Luis L. Navarro\n";
         cout << "Reuchlin Charles S. Faustino\n\n";
 
-        // Ver info
-        cout << "Version date: 2025-10-01\n\n";
+        cout << "Version date: 2025-11-27\n\n";
 
-        // Messages
         for (int i = 0; i < MESSAGE_LINES; ++i) {
             cout << "\033[K\n";
         }        
         cout << "\033[" << MESSAGE_LINES << "A";
 
-        // Prompt line: display live typing
-        cout << "\n\033[K";  // move to new line and clear it
+        cout << "\n\033[K";
         cout << "root > " << current_line << flush;
         cout << "\n\033[K";
         cout << "\n\033[K";
@@ -259,13 +242,11 @@ void display_thread_func() {
             cout << "\n";
         }
 
-        // literally just ensure no trailing garbage after our content
         cout << "\033[J" << flush;
 
         this_thread::sleep_for(chrono::milliseconds(REFRESH_RATE));
     }
 
-    // restore cursor visibility
     cout << "\033[?25h";
 }
 
@@ -287,20 +268,30 @@ void setMessage(const string &s) {
 
 void help_option() {
     setMessage(
-        "help          - displays the commands and its description.\n"
-        "start_marquee - starts the marquee animation.\n"
-        "stop_marquee  - stops the marquee animation.\n"
-        "set_text TXT  - accepts a text input and displays it as a marquee.\n"
-        "set_speed N   - sets the marquee animation refresh in milliseconds.\n"
-        "exit          - terminates the console.\n"
+        "help              - displays the commands and its description.\n"
+        "initialize        - initialize the OS scheduler and memory manager.\n"
+        "scheduler-start   - starts automatic process generation.\n"
+        "scheduler-stop    - stops automatic process generation.\n"
+        "screen -s <n> <m> - creates a process with name and memory size.\n"
+        "screen -c <n> <m> \"<i>\" - creates a process with custom instructions.\n"
+        "screen -r <n>     - reattaches to a process screen.\n"
+        "screen -ls        - lists all processes.\n"
+        "process-smi       - shows memory usage summary.\n"
+        "vmstat            - shows detailed virtual memory statistics.\n"
+        "report-util       - generates CPU utilization report.\n"
+        "start_marquee     - starts the marquee animation.\n"
+        "stop_marquee      - stops the marquee animation.\n"
+        "set_text TXT      - sets marquee text.\n"
+        "set_speed N       - sets marquee speed.\n"
+        "exit              - exits the console.\n"
     );
 }
 
 // ---------------- main ----------------
 int main() {
-    cout << "\033[2J\033[H"; // clear screen
+    cout << "\033[2J\033[H";
 
-    MC01::init_module();   // does not read config until "initialize" command
+    CSOPESY::init_module();
 
     auto font = loadFont("characters.txt");
     {
@@ -334,12 +325,11 @@ int main() {
             }
 
             if (cmd == "exit") {
-                bool handled = MC01::handle_command("exit");
+                bool handled = CSOPESY::handle_command("exit");
                 if (handled) {
                     continue;
                 }
 
-                // exit program
                 is_running = false;
                 is_stop = true;
                 break;
@@ -373,7 +363,7 @@ int main() {
                 }
             }
             else {
-                if (!MC01::handle_command(cmd)) {
+                if (!CSOPESY::handle_command(cmd)) {
                     setMessage("Command not found. Please check the 'help' option.\n");
                 }
             }
