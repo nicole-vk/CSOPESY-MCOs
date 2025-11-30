@@ -23,7 +23,6 @@ using namespace std;
 
 namespace CSOPESY {
 
-    
     struct Config {
         uint32_t num_cpu = 4;
         string scheduler = "rr";
@@ -33,14 +32,12 @@ namespace CSOPESY {
         uint32_t max_ins = 2000;
         uint64_t delays_per_exec = 0;
         
-        // memory parameters
-        uint64_t max_overall_mem = 16384;  // 2^14 bytes default
-        uint64_t mem_per_frame = 256;      // 2^8 bytes default
+        uint64_t max_overall_mem = 16384;
+        uint64_t mem_per_frame = 256;
         uint64_t min_mem_per_proc = 256;
         uint64_t max_mem_per_proc = 1024;
     } config;
 
-    
     struct Frame {
         bool occupied = false;
         int process_id = -1;
@@ -81,7 +78,6 @@ namespace CSOPESY {
 
     string BACKING_STORE_FILE = "csopesy-backing-store.txt";
 
-    
     atomic<bool> initialized(false);
     atomic<bool> generator_running(false);
     atomic<bool> stop_all(false);
@@ -106,7 +102,6 @@ namespace CSOPESY {
         chrono::system_clock::time_point start_time;
         int current_core = -1;
         
-        // memory management
         uint64_t memory_size = 0;
         PageTable* page_table = nullptr;
         bool has_memory_error = false;
@@ -146,7 +141,6 @@ namespace CSOPESY {
     atomic<uint64_t> busy_core_count(0);
     atomic<uint64_t> total_busy_ticks(0);
     atomic<uint64_t> total_ticks_elapsed(0);
-
 
     static string trim(const string &s) {
         size_t a = s.find_first_not_of(" \t\r\n");
@@ -190,7 +184,6 @@ namespace CSOPESY {
         return size >= 64 && size <= 65536 && is_power_of_two(size);
     }
 
-  
     void init_memory_manager() {
         lock_guard<mutex> lock(memory_mutex);
         
@@ -299,7 +292,6 @@ namespace CSOPESY {
         return true;
     }
 
-    
     static Instr make_PRINT(const string &msg) { 
         Instr i; i.opcode = "PRINT"; i.args = {msg}; return i; 
     }
@@ -320,7 +312,6 @@ namespace CSOPESY {
         Instr i; i.opcode = "SLEEP"; i.args = {ticks}; return i; 
     }
     
-    // MCO2: New instructions
     static Instr make_READ(const string &var, const string &addr) {
         Instr i; i.opcode = "READ"; i.args = {var, addr}; return i;
     }
@@ -384,7 +375,11 @@ namespace CSOPESY {
         return out;
     }
 
-    
+// ============================================================
+// final.cpp - PART 2 OF 3 (CORRECTED)
+// Append this after Part 1
+// ============================================================
+
     static vector<Instr> random_instructions_for(const string &pname) {
         uniform_int_distribution<int> d(config.min_ins, config.max_ins);
         int n = d(rng);
@@ -411,7 +406,6 @@ namespace CSOPESY {
             } else if (choice == 4) {
                 out.push_back(make_SLEEP(to_string((int)sleepval(rng))));
             } else if (choice == 5) {
-                // FOR loop
                 int inner_count = for_inner_len(rng);
                 vector<string> inner_enc;
                 for (int j=0;j<inner_count;j++) {
@@ -429,12 +423,10 @@ namespace CSOPESY {
                 int repeats = for_repeats(rng);
                 out.push_back(make_FOR((uint32_t)repeats, enc));
             } else if (choice == 6) {
-                // READ 
                 stringstream ss;
                 ss << "0x" << hex << mem_addr(rng);
                 out.push_back(make_READ("temp_var", ss.str()));
             } else if (choice == 7) {
-                // WRITE
                 stringstream ss;
                 ss << "0x" << hex << mem_addr(rng);
                 out.push_back(make_WRITE(ss.str(), to_string(smallval(rng))));
@@ -445,7 +437,6 @@ namespace CSOPESY {
         return out;
     }
 
-    // parse user-defined instructions
     vector<Instr> parse_user_instructions(const string &instr_str) {
         vector<Instr> out;
         stringstream ss(instr_str);
@@ -486,7 +477,6 @@ namespace CSOPESY {
         return out;
     }
 
-    // memory access helpers
     uint64_t hex_to_uint64(const string &hex_str) {
         uint64_t value = 0;
         stringstream ss;
@@ -569,11 +559,9 @@ namespace CSOPESY {
         }
     }
 
-    
     void exec_inst(shared_ptr<Process> p, int cid) {
         lock_guard<mutex> lk(p->m);
         
-        // check for memory error
         if (p->has_memory_error) {
             p->state = P_ERROR;
             return;
@@ -650,7 +638,6 @@ namespace CSOPESY {
             }
             p->state = P_SLEEPING;
         }
-        
         else if (in.opcode == "READ") {
             if (in.args.size() >= 2) {
                 string var = in.args[0];
@@ -667,7 +654,6 @@ namespace CSOPESY {
             }
             p->ip++;
         }
-        
         else if (in.opcode == "WRITE") {
             if (in.args.size() >= 2) {
                 string addr_str = in.args[0];
@@ -717,7 +703,6 @@ namespace CSOPESY {
         if (p->ip >= p->instructions.size() && p->state != P_SLEEPING) p->state = P_FINISHED;
     }
 
-   
     shared_ptr<Process> create_process(const string &name, uint64_t mem_size = 0, 
                                        const vector<Instr> &custom_instrs = {}) {
         auto p = make_shared<Process>();
@@ -727,10 +712,17 @@ namespace CSOPESY {
             p->name = name;
         }
 
-        // set up memory if provided
         if (mem_size > 0) {
-            p->memory_size = mem_size;
-            p->page_table = new PageTable(mem_size, config.mem_per_frame);
+            // Clamp to valid range
+            if (mem_size < 64) mem_size = 64;
+            if (mem_size > 65536) mem_size = 65536;
+            // Round to nearest power of 2
+            uint64_t rounded = 64;
+            while (rounded < mem_size && rounded <= 65536) rounded *= 2;
+            if (rounded > 65536) rounded = 65536;
+            
+            p->memory_size = rounded;
+            p->page_table = new PageTable(rounded, config.mem_per_frame);
         }
 
         p->vars["x"] = 0;
@@ -758,7 +750,6 @@ namespace CSOPESY {
         return p;
     }
 
-    
     void cpu_worker(int cid) {
         while (!stop_all) {
             int pid = -1;
@@ -829,7 +820,6 @@ namespace CSOPESY {
         }
     }
 
-    
     void scheduler_loop() {
         while (!stop_all) {
             {
@@ -839,7 +829,6 @@ namespace CSOPESY {
 
             total_ticks_elapsed.fetch_add(1, std::memory_order_relaxed);
 
-            // wake sleeping processes
             {
                 lock_guard<mutex> lk(processes_mutex);
                 vector<int> to_ready;
@@ -858,7 +847,6 @@ namespace CSOPESY {
                 }
             }
 
-            // auto-generate processes (w/ memory)
             if (generator_running && config.batch_process_freq > 0) {
                 bool should_create = false;
                 {
@@ -872,7 +860,6 @@ namespace CSOPESY {
                         lock_guard<mutex> lk(processes_mutex);
                         pid = next_pid;
                     }
-                    // auto-generated processes get memory
                     uniform_int_distribution<uint64_t> mem_dist(
                         config.min_mem_per_proc, config.max_mem_per_proc
                     );
@@ -908,7 +895,11 @@ namespace CSOPESY {
         return stats;
     }
 
-    
+// ============================================================
+// final.cpp - PART 3 OF 3 (CORRECTED - FINAL)
+// Append this after Part 2
+// ============================================================
+
     string screen_get_attached_output(const string &process_name) {
         lock_guard<mutex> lock(processes_mutex);
         if (!processes_by_name.count(process_name))
@@ -917,13 +908,10 @@ namespace CSOPESY {
         auto p = processes_by_name[process_name];
         lock_guard<mutex> pl(p->m);
 
-        auto logs = p->logs;
-
         stringstream ss;
         ss << "Process name: " << p->name << "\n";
         ss << "ID: " << p->pid << "\n";
         
-        // show memory if allocated
         if (p->memory_size > 0) {
             ss << "Memory: " << p->memory_size << " bytes\n";
         }
@@ -947,7 +935,6 @@ namespace CSOPESY {
         } else if (p->state == P_READY) {
             ss << "State: READY\n";
         } else if (p->state == P_ERROR) {
-            // show memory error
             time_t t = chrono::system_clock::to_time_t(p->error_time);
             struct tm tm;
             #ifdef _WIN32
@@ -965,7 +952,6 @@ namespace CSOPESY {
         return ss.str();
     }
 
-    
     bool read_config_file(const string &fn) {
         ifstream f(fn);
         if (!f.good()) return false;
@@ -978,7 +964,6 @@ namespace CSOPESY {
             string k = p[0];
             string v = p[1];
             
-            // Remove quotes
             if (!v.empty() && v.front() == '"' && v.back() == '"') {
                 v = v.substr(1, v.length() - 2);
             }
@@ -1000,7 +985,6 @@ namespace CSOPESY {
         return true;
     }
 
-    
     bool handle_command(const string &cmd) {
         string c = trim(cmd);
 
@@ -1016,16 +1000,14 @@ namespace CSOPESY {
                 return true;
             }
             
-            // MCO2: Validate memory parameters
+            // NOTE: Don't validate min/max-mem-per-proc as they might be outside 64-65536 range
+            // Validation happens at process creation time with clamping
             if (!is_valid_memory_size(config.max_overall_mem) || 
-                !is_valid_memory_size(config.mem_per_frame) ||
-                !is_valid_memory_size(config.min_mem_per_proc) ||
-                !is_valid_memory_size(config.max_mem_per_proc)) {
-                setMessage("Error: Invalid memory parameters in config.txt\n");
+                !is_valid_memory_size(config.mem_per_frame)) {
+                setMessage("Error: Invalid max-overall-mem or mem-per-frame in config.txt\n");
                 return true;
             }
 
-            
             init_memory_manager();
             
             initialized = true;
@@ -1048,7 +1030,8 @@ namespace CSOPESY {
             return true;
         }
         
-        if (c == "scheduler-start") {
+        // Support both "scheduler-start" and "scheduler-test" (alias)
+        if (c == "scheduler-start" || c == "scheduler-test") {
             generator_running = true; setMessage("Scheduler started\n"); return true;
         }
         if (c == "scheduler-stop") {
@@ -1115,7 +1098,6 @@ namespace CSOPESY {
             return true;
         }
         
-        // MCO2: screen -s <process_name> <process_memory_size>
         if (c.rfind("screen -s ", 0) == 0) {
             auto parts = split_space(c);
             if (parts.size() < 4) {
@@ -1155,7 +1137,6 @@ namespace CSOPESY {
             setMessage(screen_get_attached_output(name));
             return true;
         }
-        
         
         if (c.rfind("screen -c ", 0) == 0) {
             size_t first_quote = c.find('"');
@@ -1228,7 +1209,6 @@ namespace CSOPESY {
                 p = processes_by_name[name];
             }
 
-            
             if (p->has_memory_error) {
                 time_t t = chrono::system_clock::to_time_t(p->error_time);
                 struct tm tm;
@@ -1248,7 +1228,6 @@ namespace CSOPESY {
             setMessage(screen_get_attached_output(name));
             return true;
         }
-        
         
         if (c == "process-smi") {
             auto stats = get_memory_stats();
@@ -1285,7 +1264,6 @@ namespace CSOPESY {
             return true;
         }
 
-        
         if (c == "vmstat") {
             auto stats = get_memory_stats();
             uint64_t total_ticks = total_ticks_elapsed.load();
