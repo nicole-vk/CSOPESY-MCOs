@@ -35,3 +35,9 @@ After installing, close msys2.exe and open mingw64.exe. Now check if g++ is ther
      >  g++ main.cpp MC01.cpp -o project.exe -std=c++17 -pthread
 
      > ./project.exe
+
+#### Multi-tasking OS
+
+     >  g++ main.cpp final.cpp -o project.exe -std=c++17 -pthread
+
+     > ./project.exe
