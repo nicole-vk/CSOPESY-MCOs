@@ -203,6 +203,21 @@ namespace CSOPESY {
         backing_store.close();
     }
 
+    void shutdown_memory_manager() {
+        lock_guard<mutex> lock(memory_mutex);
+        // mark frames free and clear vector
+        for (auto &frame : physical_memory) {
+            frame.occupied = false;
+            frame.process_id = -1;
+            frame.page_number = 0;
+            frame.data.clear();
+        }
+        physical_memory.clear();
+        // keep backing store for offline inspection; ensure file closed
+        ofstream backing_store(BACKING_STORE_FILE, ios::app);
+        backing_store.close();
+    }
+
     int find_free_frame() {
         lock_guard<mutex> lock(memory_mutex);
         for (size_t i = 0; i < physical_memory.size(); i++) {
@@ -373,6 +388,24 @@ namespace CSOPESY {
             out.push_back(parse_encoded_instr(token));
         }
         return out;
+    }
+
+    // Helper: print per-process page table summary into ss
+    static void print_page_table(shared_ptr<Process> p, stringstream &ss) {
+        if (!p->page_table) {
+            ss << "No page table (process has no memory allocation)\n";
+            return;
+        }
+        ss << "Page Table (page -> frame, in_mem, dirty):\n";
+        ss << "Page  Frame  InMem  Dirty\n";
+        for (size_t i = 0; i < p->page_table->pages.size(); ++i) {
+            auto &pg = p->page_table->pages[i];
+            ss << setw(4) << i << "   ";
+            if (pg.frame_number >= 0) ss << setw(5) << pg.frame_number;
+            else ss << setw(5) << "-";
+            ss << "   " << (pg.in_memory ? "YES " : " NO ");
+            ss << "   " << (pg.dirty ? "YES" : " NO") << "\n";
+        }
     }
 
 // ============================================================
@@ -911,23 +944,31 @@ namespace CSOPESY {
         stringstream ss;
         ss << "Process name: " << p->name << "\n";
         ss << "ID: " << p->pid << "\n";
-        
+
         if (p->memory_size > 0) {
             ss << "Memory: " << p->memory_size << " bytes\n";
+            // symbol table fixed size 64 bytes, variables use 2 bytes each
+            size_t var_count = p->vars.size();
+            size_t sym_used_bytes = var_count * 2;
+            ss << "Symbol table: 64 bytes (used " << sym_used_bytes << " bytes, vars: "
+               << var_count << " / 32)\n";
+            ss << "\n";
+            print_page_table(p, ss);
+            ss << "\n";
         }
-        
+
         ss << "Logs (Latest 10):\n";
         size_t start_index = (p->logs.size() > 10) ? p->logs.size() - 10 : 0;
         for (size_t i = start_index; i < p->logs.size(); ++i) {
             ss << p->logs[i] << "\n";
         }
-        
+
         ss << "\nCurrent instruction line: " << p->ip << "\n";
         ss << "Lines of code: " << p->instructions.size() << "\n";
         ss << "Variables:\n";
-        
+
         for (auto &kv : p->vars) ss << kv.first << " = " << kv.second << "\n";
-        
+
         if (p->state == P_SLEEPING) {
             ss << "State: SLEEPING (wakes at tick " << p->wake_tick << ")\n";
         } else if (p->state == P_RUNNING) {
@@ -935,6 +976,7 @@ namespace CSOPESY {
         } else if (p->state == P_READY) {
             ss << "State: READY\n";
         } else if (p->state == P_ERROR) {
+            // Exact PDF-required wording:
             time_t t = chrono::system_clock::to_time_t(p->error_time);
             struct tm tm;
             #ifdef _WIN32
@@ -944,8 +986,8 @@ namespace CSOPESY {
             #endif
             char b[16];
             strftime(b, sizeof(b), "%H:%M:%S", &tm);
-            ss << "State: ERROR - Memory access violation at " << b 
-               << ". " << p->error_message << " invalid.\n";
+            ss << "Process " << p->name << " shut down due to memory access violation error that occurred at "
+               << b << ". " << p->error_message << " invalid.\n";
         } else if (p->state == P_FINISHED) {
             ss << "\n\nFinished!\n";
         }
@@ -1232,18 +1274,18 @@ namespace CSOPESY {
         if (c == "process-smi") {
             auto stats = get_memory_stats();
             stringstream ss;
-            
+
             ss << "=========================================\n";
             ss << "| PROCESS-SMI V1.0      Driver Version |\n";
             ss << "=========================================\n\n";
             ss << "Memory Usage: " << stats.used_memory << " / " << stats.total_memory << " bytes\n";
-            ss << "Memory Utilization: " << fixed << setprecision(1) 
-               << (100.0 * stats.used_memory / stats.total_memory) << "%\n\n";
-            
+            double mem_percent = (stats.total_memory>0) ? (100.0 * stats.used_memory / stats.total_memory) : 0.0;
+            ss << "Memory Utilization: " << fixed << setprecision(1) << mem_percent << "%\n\n";
+
             ss << "=========================================\n";
             ss << "Running Processes and Memory Usage:\n";
             ss << "=========================================\n";
-            
+
             vector<shared_ptr<Process>> procs;
             {
                 lock_guard<mutex> lk(processes_mutex);
@@ -1251,15 +1293,26 @@ namespace CSOPESY {
                     procs.push_back(kv.second);
                 }
             }
-            
+
+            // header
+            ss << left << setw(20) << "Name" << setw(8) << "PID" << setw(12) << "Mem(bytes)"
+               << setw(10) << "Frames" << setw(8) << "Pct" << "\n";
+            ss << string(60, '-') << "\n";
+
             for (auto &p : procs) {
                 lock_guard<mutex> pl(p->m);
                 if (p->state != P_FINISHED && p->state != P_ERROR && p->memory_size > 0) {
-                    ss << p->name << " (PID " << p->pid << "): " 
-                       << p->memory_size << " bytes\n";
+                    // Count frames used by this PID
+                    uint32_t frames_used = 0;
+                    if (p->page_table) {
+                        for (auto &pg : p->page_table->pages) if (pg.in_memory) frames_used++;
+                    }
+                    double pct = (stats.total_memory>0) ? (100.0 * (frames_used * config.mem_per_frame) / stats.total_memory) : 0.0;
+                    ss << left << setw(20) << p->name << setw(8) << p->pid << setw(12) << p->memory_size
+                       << setw(10) << frames_used << setw(8) << fixed << setprecision(1) << pct << "\n";
                 }
             }
-            
+
             setMessage(ss.str());
             return true;
         }
@@ -1268,8 +1321,8 @@ namespace CSOPESY {
             auto stats = get_memory_stats();
             uint64_t total_ticks = total_ticks_elapsed.load();
             uint64_t busy_ticks = total_busy_ticks.load();
-            uint64_t idle_ticks = total_ticks * config.num_cpu - busy_ticks;
-            
+            uint64_t idle_ticks = (total_ticks * config.num_cpu > busy_ticks) ? (total_ticks * config.num_cpu - busy_ticks) : 0;
+
             stringstream ss;
             ss << "=========================================\n";
             ss << "VIRTUAL MEMORY STATISTICS\n";
@@ -1277,12 +1330,31 @@ namespace CSOPESY {
             ss << "Total memory:     " << stats.total_memory << " bytes\n";
             ss << "Used memory:      " << stats.used_memory << " bytes\n";
             ss << "Free memory:      " << stats.free_memory << " bytes\n\n";
+            ss << "Total frames:     " << stats.total_frames << "\n";
+            ss << "Used frames:      " << stats.used_frames << "\n";
+            ss << "Free frames:      " << stats.free_frames << "\n\n";
             ss << "Idle CPU ticks:   " << idle_ticks << "\n";
             ss << "Active CPU ticks: " << busy_ticks << "\n";
             ss << "Total CPU ticks:  " << (total_ticks * config.num_cpu) << "\n\n";
             ss << "Num paged in:     " << stats.num_pages_in << "\n";
             ss << "Num paged out:    " << stats.num_pages_out << "\n";
-            
+
+            setMessage(ss.str());
+            return true;
+        }
+
+        if (c.rfind("show-pagetable ", 0) == 0) {
+            string name = trim(c.substr(strlen("show-pagetable ")));
+            lock_guard<mutex> lk(processes_mutex);
+            if (!processes_by_name.count(name)) {
+                setMessage("Process " + name + " not found\n");
+                return true;
+            }
+            auto p = processes_by_name[name];
+            lock_guard<mutex> pl(p->m);
+            stringstream ss;
+            ss << "Page table for process " << name << " (PID " << p->pid << "):\n";
+            print_page_table(p, ss);
             setMessage(ss.str());
             return true;
         }
@@ -1352,6 +1424,7 @@ namespace CSOPESY {
         for (auto &t : cpu_workers) if (t.joinable()) t.join();
         cpu_workers.clear();
         initialized = false;
+        shutdown_memory_manager();
     }
 
     void init_module() {
@@ -1364,4 +1437,4 @@ namespace CSOPESY {
         total_ticks_elapsed.store(0);
     }
 
-} // namespace CSOPESY
+}

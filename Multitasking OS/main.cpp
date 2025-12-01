@@ -283,6 +283,7 @@ void help_option() {
         "stop_marquee      - stops the marquee animation.\n"
         "set_text TXT      - sets marquee text.\n"
         "set_speed N       - sets marquee speed.\n"
+        "show-pagetable <name> - shows the page table for a process.\n"
         "exit              - exits the console.\n"
     );
 }
