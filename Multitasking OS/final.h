@@ -12,7 +12,6 @@ namespace CSOPESY {
     
     // Memory management functions
     void init_memory_manager();
-    void shutdown_memory_manager();
     
     // Memory statistics
     struct MemoryStats {

@@ -45,7 +45,7 @@ namespace CSOPESY {
         vector<uint16_t> data;
         
         Frame() {
-            data.resize(256, 0);
+            data.resize(128, 0); // Default, will resize in init
         }
     };
 
@@ -54,6 +54,7 @@ namespace CSOPESY {
         int frame_number = -1;
         bool in_memory = false;
         bool dirty = false;
+        bool on_disk = false;
     };
 
     struct PageTable {
@@ -63,6 +64,8 @@ namespace CSOPESY {
         PageTable(uint64_t size, uint64_t frame_size) {
             total_size = size;
             uint32_t num_pages = (size + frame_size - 1) / frame_size;
+            if (num_pages == 0 && size > 0) num_pages = 1;
+            
             pages.resize(num_pages);
             for (uint32_t i = 0; i < num_pages; i++) {
                 pages[i].page_number = i;
@@ -139,8 +142,12 @@ namespace CSOPESY {
 
     vector<char> core_busy;
     atomic<uint64_t> busy_core_count(0);
-    atomic<uint64_t> total_busy_ticks(0);
+    
     atomic<uint64_t> total_ticks_elapsed(0);
+    atomic<uint64_t> total_busy_ticks(0);
+    
+    atomic<uint64_t> idle_cpu_time_ns(0);
+    chrono::time_point<chrono::steady_clock> simulation_start_time;
 
     static string trim(const string &s) {
         size_t a = s.find_first_not_of(" \t\r\n");
@@ -181,7 +188,7 @@ namespace CSOPESY {
     }
 
     static bool is_valid_memory_size(uint64_t size) {
-        return size >= 64 && size <= 65536 && is_power_of_two(size);
+        return size >= 4 && size <= 65536 && is_power_of_two(size);
     }
 
     void init_memory_manager() {
@@ -192,7 +199,9 @@ namespace CSOPESY {
         physical_memory.resize(total_frames);
         
         for (auto &frame : physical_memory) {
-            frame.data.resize(config.mem_per_frame / 2, 0);
+            size_t vec_size = config.mem_per_frame / 2;
+            if (vec_size < 1) vec_size = 1;
+            frame.data.resize(vec_size, 0);
         }
         
         next_frame_to_evict = 0;
@@ -204,13 +213,41 @@ namespace CSOPESY {
     }
 
     int find_free_frame() {
-        lock_guard<mutex> lock(memory_mutex);
         for (size_t i = 0; i < physical_memory.size(); i++) {
             if (!physical_memory[i].occupied) {
                 return (int)i;
             }
         }
         return -1;
+    }
+
+    bool read_page_from_backing_store(int pid, uint32_t page_num, vector<uint16_t>& frame_data) {
+        ifstream bs(BACKING_STORE_FILE);
+        if (!bs.is_open()) return false;
+
+        string line, data_line;
+        bool found = false;
+        string target_header = "PID:" + to_string(pid) + " PAGE:" + to_string(page_num);
+
+        while (getline(bs, line)) {
+            if (line.find(target_header) != string::npos) {
+                if (getline(bs, data_line)) {
+                    found = true; 
+                }
+            }
+        }
+        bs.close();
+
+        if (found && !data_line.empty()) {
+            stringstream ss(data_line);
+            string val_str;
+            int idx = 0;
+            while (getline(ss, val_str, ',') && idx < frame_data.size()) {
+                try { frame_data[idx++] = (uint16_t)stoi(val_str); } catch(...) {}
+            }
+            return true;
+        }
+        return false;
     }
 
     void write_page_to_backing_store(int frame_idx) {
@@ -234,36 +271,48 @@ namespace CSOPESY {
         num_pages_paged_out++;
     }
 
-    int evict_page_fifo() {
-        lock_guard<mutex> lock(memory_mutex);
-        
-        if (physical_memory.empty()) return -1;
+    // Returns true if simulated I/O sleep occurred
+    bool evict_page_fifo() {
+        if (physical_memory.empty()) return false;
         
         uint32_t start = next_frame_to_evict;
         for (uint32_t i = 0; i < physical_memory.size(); i++) {
             uint32_t idx = (start + i) % physical_memory.size();
             if (physical_memory[idx].occupied) {
+                memory_mutex.unlock();
+                
+                // Simulate I/O latency for write - Add to IDLE time
+                auto t1 = chrono::steady_clock::now();
+                this_thread::sleep_for(chrono::milliseconds(200)); 
+                auto t2 = chrono::steady_clock::now();
+                idle_cpu_time_ns.fetch_add(chrono::duration_cast<chrono::nanoseconds>(t2 - t1).count(), std::memory_order_relaxed);
+
                 write_page_to_backing_store(idx);
                 
-                int evicted_pid = physical_memory[idx].process_id;
-                uint32_t evicted_page = physical_memory[idx].page_number;
+                memory_mutex.lock();
                 
-                lock_guard<mutex> plock(processes_mutex);
-                if (processes_by_pid.count(evicted_pid)) {
-                    auto proc = processes_by_pid[evicted_pid];
-                    if (proc->page_table && evicted_page < proc->page_table->pages.size()) {
-                        proc->page_table->pages[evicted_page].in_memory = false;
-                        proc->page_table->pages[evicted_page].frame_number = -1;
+                if (physical_memory[idx].occupied) {
+                    int evicted_pid = physical_memory[idx].process_id;
+                    uint32_t evicted_page = physical_memory[idx].page_number;
+                    
+                    lock_guard<mutex> plock(processes_mutex);
+                    if (processes_by_pid.count(evicted_pid)) {
+                        auto proc = processes_by_pid[evicted_pid];
+                        if (proc->page_table && evicted_page < proc->page_table->pages.size()) {
+                            proc->page_table->pages[evicted_page].in_memory = false;
+                            proc->page_table->pages[evicted_page].frame_number = -1;
+                            proc->page_table->pages[evicted_page].on_disk = true; 
+                        }
                     }
+                    
+                    physical_memory[idx].occupied = false;
+                    physical_memory[idx].process_id = -1;
+                    next_frame_to_evict = (idx + 1) % physical_memory.size();
+                    return true;
                 }
-                
-                physical_memory[idx].occupied = false;
-                physical_memory[idx].process_id = -1;
-                next_frame_to_evict = (idx + 1) % physical_memory.size();
-                return idx;
             }
         }
-        return -1;
+        return false;
     }
 
     bool load_page_to_memory(shared_ptr<Process> p, uint32_t page_num) {
@@ -272,24 +321,62 @@ namespace CSOPESY {
         }
         
         auto &page = p->page_table->pages[page_num];
-        if (page.in_memory) return true;
+        if (page.in_memory) return false;
         
+        memory_mutex.lock();
         int frame_idx = find_free_frame();
+        bool io_sleep_occured = false;
+
         if (frame_idx == -1) {
-            frame_idx = evict_page_fifo();
-            if (frame_idx == -1) return false;
+            io_sleep_occured = evict_page_fifo(); 
+            frame_idx = find_free_frame();
+            if (frame_idx == -1) {
+                memory_mutex.unlock();
+                return io_sleep_occured;
+            }
         }
         
-        lock_guard<mutex> lock(memory_mutex);
         physical_memory[frame_idx].occupied = true;
         physical_memory[frame_idx].process_id = p->pid;
         physical_memory[frame_idx].page_number = page_num;
+        memory_mutex.unlock();
+
+        if (page.on_disk) {
+            // Sleep for Read I/O - Add to IDLE time
+            auto t1 = chrono::steady_clock::now();
+            this_thread::sleep_for(chrono::milliseconds(200));
+            auto t2 = chrono::steady_clock::now();
+            idle_cpu_time_ns.fetch_add(chrono::duration_cast<chrono::nanoseconds>(t2 - t1).count(), std::memory_order_relaxed);
+            
+            io_sleep_occured = true;
+            
+            size_t vec_size = config.mem_per_frame / 2;
+            if(vec_size < 1) vec_size = 1;
+            vector<uint16_t> disk_data(vec_size, 0);
+            
+            bool restored = read_page_from_backing_store(p->pid, page_num, disk_data);
+
+            memory_mutex.lock();
+            if (restored) {
+                physical_memory[frame_idx].data = disk_data;
+            } else {
+                fill(physical_memory[frame_idx].data.begin(), physical_memory[frame_idx].data.end(), 0);
+            }
+            memory_mutex.unlock();
+        } else {
+            // Fresh allocation - No Sleep
+            memory_mutex.lock();
+            fill(physical_memory[frame_idx].data.begin(), physical_memory[frame_idx].data.end(), 0);
+            memory_mutex.unlock();
+        }
         
+        memory_mutex.lock();
         page.in_memory = true;
         page.frame_number = frame_idx;
         num_pages_paged_in++;
+        memory_mutex.unlock();
         
-        return true;
+        return io_sleep_occured;
     }
 
     static Instr make_PRINT(const string &msg) { 
@@ -375,11 +462,6 @@ namespace CSOPESY {
         return out;
     }
 
-// ============================================================
-// final.cpp - PART 2 OF 3 (CORRECTED)
-// Append this after Part 1
-// ============================================================
-
     static vector<Instr> random_instructions_for(const string &pname) {
         uniform_int_distribution<int> d(config.min_ins, config.max_ins);
         int n = d(rng);
@@ -390,7 +472,7 @@ namespace CSOPESY {
         uniform_int_distribution<int> sleepval(1,5);
         uniform_int_distribution<int> for_inner_len(1,4);
         uniform_int_distribution<int> for_repeats(1,4);
-        uniform_int_distribution<int> mem_addr(0x1000, 0x5000);
+        uniform_int_distribution<int> mem_addr(0x1000, 0x4000); 
         
         for (int i = 0; i < n; ++i) {
             int choice = op_choice(rng);
@@ -490,62 +572,49 @@ namespace CSOPESY {
         return addr < p->memory_size;
     }
 
-    uint16_t read_memory(shared_ptr<Process> p, uint64_t addr) {
+    pair<uint16_t, bool> read_memory_internal(shared_ptr<Process> p, uint64_t addr) {
         if (!is_valid_memory_address(p, addr)) {
             p->has_memory_error = true;
             stringstream ss;
             ss << "0x" << hex << addr;
             p->error_message = ss.str();
             p->error_time = chrono::system_clock::now();
-            return 0;
+            return {0, false};
         }
         
         uint32_t page_num = addr / config.mem_per_frame;
         uint32_t offset = (addr % config.mem_per_frame) / 2;
         
-        if (!load_page_to_memory(p, page_num)) {
-            p->has_memory_error = true;
-            stringstream ss;
-            ss << "0x" << hex << addr;
-            p->error_message = ss.str();
-            p->error_time = chrono::system_clock::now();
-            return 0;
-        }
+        bool io_occured = load_page_to_memory(p, page_num);
         
         auto &page = p->page_table->pages[page_num];
         int frame_idx = page.frame_number;
+        uint16_t val = 0;
         
         if (frame_idx >= 0 && frame_idx < (int)physical_memory.size()) {
             lock_guard<mutex> lock(memory_mutex);
             if (offset < physical_memory[frame_idx].data.size()) {
-                return physical_memory[frame_idx].data[offset];
+                val = physical_memory[frame_idx].data[offset];
             }
         }
         
-        return 0;
+        return {val, io_occured};
     }
 
-    void write_memory(shared_ptr<Process> p, uint64_t addr, uint16_t value) {
+    bool write_memory_internal(shared_ptr<Process> p, uint64_t addr, uint16_t value) {
         if (!is_valid_memory_address(p, addr)) {
             p->has_memory_error = true;
             stringstream ss;
             ss << "0x" << hex << addr;
             p->error_message = ss.str();
             p->error_time = chrono::system_clock::now();
-            return;
+            return false;
         }
         
         uint32_t page_num = addr / config.mem_per_frame;
         uint32_t offset = (addr % config.mem_per_frame) / 2;
         
-        if (!load_page_to_memory(p, page_num)) {
-            p->has_memory_error = true;
-            stringstream ss;
-            ss << "0x" << hex << addr;
-            p->error_message = ss.str();
-            p->error_time = chrono::system_clock::now();
-            return;
-        }
+        bool io_occured = load_page_to_memory(p, page_num);
         
         auto &page = p->page_table->pages[page_num];
         int frame_idx = page.frame_number;
@@ -557,41 +626,47 @@ namespace CSOPESY {
                 page.dirty = true;
             }
         }
+        return io_occured;
     }
 
-    void exec_inst(shared_ptr<Process> p, int cid) {
-        lock_guard<mutex> lk(p->m);
-        
-        if (p->has_memory_error) {
-            p->state = P_ERROR;
-            return;
-        }
-        
-        if (p->state == P_FINISHED || p->ip >= p->instructions.size()) {
-            p->state = P_FINISHED;
-            return;
+    bool exec_inst(shared_ptr<Process> p, int cid) {
+        Instr in;
+        {
+            lock_guard<mutex> lk(p->m);
+            if (p->has_memory_error) {
+                p->state = P_ERROR;
+                return false;
+            }
+            if (p->state == P_FINISHED || p->ip >= p->instructions.size()) {
+                p->state = P_FINISHED;
+                return false;
+            }
+            in = p->instructions[p->ip];
         }
 
-        auto &in = p->instructions[p->ip];
+        bool io_occured = false;
 
         if (in.opcode == "PRINT") {
             string msg_template = in.args[0];
             auto now = chrono::system_clock::now();
             time_t t = chrono::system_clock::to_time_t(now);
             struct tm tm;
-        #ifdef _WIN32
-            localtime_s(&tm, &t);
-        #else
-            localtime_r(&t, &tm);
-        #endif
+            #ifdef _WIN32
+                localtime_s(&tm, &t);
+            #else
+                localtime_r(&t, &tm);
+            #endif
             char b[64];
             strftime(b, sizeof(b), "(%m/%d/%Y %I:%M:%S%p)", &tm);
             ostringstream msg;
             msg << b << " Core:" << cid << " \"" << msg_template << "\"";
+            
+            lock_guard<mutex> lk(p->m);
             p->logs.push_back(msg.str());
             p->ip++;
         }
         else if (in.opcode == "ADD") {
+            lock_guard<mutex> lk(p->m);
             auto get = [&](const string &s)->uint32_t {
                 if (!s.empty() && isdigit(static_cast<unsigned char>(s[0]))) return (uint32_t)stoi(s);
                 if (!p->vars.count(s)) p->vars[s] = 0;
@@ -604,6 +679,7 @@ namespace CSOPESY {
             p->ip++;
         }
         else if (in.opcode == "SUBTRACT") {
+            lock_guard<mutex> lk(p->m);
             auto get = [&](const string &s)->uint32_t {
                 if (!s.empty() && isdigit(static_cast<unsigned char>(s[0]))) return (uint32_t)stoi(s);
                 if (!p->vars.count(s)) p->vars[s] = 0;
@@ -616,6 +692,7 @@ namespace CSOPESY {
             p->ip++;
         }
         else if (in.opcode == "DECLARE") {
+            lock_guard<mutex> lk(p->m);
             if (p->vars.size() < 32) {
                 string var = in.args.size() > 0 ? in.args[0] : "";
                 int64_t val = 0;
@@ -631,12 +708,16 @@ namespace CSOPESY {
             if (in.args.size() > 0) {
                 try { ticks = stoull(in.args[0]); } catch(...) { ticks = 0; }
             }
-            p->ip++;
+            {
+                lock_guard<mutex> lk(p->m);
+                p->ip++;
+            }
             {
                 lock_guard<mutex> tl(tick_mutex);
+                lock_guard<mutex> lk(p->m);
                 p->wake_tick = cpu_tick + max<uint64_t>(1, ticks);
+                p->state = P_SLEEPING;
             }
-            p->state = P_SLEEPING;
         }
         else if (in.opcode == "READ") {
             if (in.args.size() >= 2) {
@@ -646,12 +727,17 @@ namespace CSOPESY {
                     addr_str = addr_str.substr(2);
                 }
                 uint64_t addr = hex_to_uint64(addr_str);
-                uint16_t value = read_memory(p, addr);
                 
+                auto res = read_memory_internal(p, addr);
+                uint16_t value = res.first;
+                io_occured = res.second;
+                
+                lock_guard<mutex> lk(p->m);
                 if (!p->has_memory_error && p->vars.size() < 32) {
                     p->vars[var] = value;
                 }
             }
+            lock_guard<mutex> lk(p->m);
             p->ip++;
         }
         else if (in.opcode == "WRITE") {
@@ -663,17 +749,22 @@ namespace CSOPESY {
                 uint64_t addr = hex_to_uint64(addr_str);
                 
                 uint16_t value = 0;
-                if (!in.args[1].empty() && isdigit(static_cast<unsigned char>(in.args[1][0]))) {
-                    value = (uint16_t)stoi(in.args[1]);
-                } else if (p->vars.count(in.args[1])) {
-                    value = p->vars[in.args[1]];
+                {
+                    lock_guard<mutex> lk(p->m);
+                    if (!in.args[1].empty() && isdigit(static_cast<unsigned char>(in.args[1][0]))) {
+                        value = (uint16_t)stoi(in.args[1]);
+                    } else if (p->vars.count(in.args[1])) {
+                        value = p->vars[in.args[1]];
+                    }
                 }
                 
-                write_memory(p, addr, value);
+                io_occured = write_memory_internal(p, addr, value);
             }
+            lock_guard<mutex> lk(p->m);
             p->ip++;
         }
         else if (in.opcode == "FOR") {
+            lock_guard<mutex> lk(p->m);
             uint32_t repeats = 1;
             if (in.args.size() > 0) {
                 try { repeats = (uint32_t)stoul(in.args[0]); } catch(...) { repeats = 1; }
@@ -694,13 +785,17 @@ namespace CSOPESY {
             }
         }
         else {
+            lock_guard<mutex> lk(p->m);
             p->ip++;
         }
 
         if (config.delays_per_exec > 0)
             this_thread::sleep_for(std::chrono::milliseconds(config.delays_per_exec));
 
+        lock_guard<mutex> lk(p->m);
         if (p->ip >= p->instructions.size() && p->state != P_SLEEPING) p->state = P_FINISHED;
+        
+        return io_occured;
     }
 
     shared_ptr<Process> create_process(const string &name, uint64_t mem_size = 0, 
@@ -713,12 +808,12 @@ namespace CSOPESY {
         }
 
         if (mem_size > 0) {
-            // Clamp to valid range
-            if (mem_size < 64) mem_size = 64;
+            if (mem_size < 4) mem_size = 4;
             if (mem_size > 65536) mem_size = 65536;
-            // Round to nearest power of 2
-            uint64_t rounded = 64;
+            
+            uint64_t rounded = 4;
             while (rounded < mem_size && rounded <= 65536) rounded *= 2;
+            
             if (rounded > 65536) rounded = 65536;
             
             p->memory_size = rounded;
@@ -757,7 +852,10 @@ namespace CSOPESY {
                 unique_lock<mutex> lk(ready_mutex);
                 if (ready_queue.empty()) {
                     lk.unlock();
-                    this_thread::sleep_for(chrono::milliseconds(1));
+                    // CRITICAL CHANGED: Revert to yield instead of sleep for responsiveness
+                    this_thread::yield();
+                    // Still count this as slight idle time for measurement accuracy
+                    idle_cpu_time_ns.fetch_add(100, std::memory_order_relaxed);
                     continue;
                 }
                 pid = ready_queue.front();
@@ -787,9 +885,10 @@ namespace CSOPESY {
 
             total_busy_ticks.fetch_add(1, std::memory_order_relaxed);
 
+            // Execute Quantum
             if (config.scheduler == "rr") {
                 for (uint64_t i = 0; i < config.quantum_cycles; i++) {
-                    exec_inst(p, cid);
+                    exec_inst(p, cid); 
                     total_executed_instructions++;
                     if (p->state != P_RUNNING) break;
                 }
@@ -797,7 +896,7 @@ namespace CSOPESY {
                 exec_inst(p, cid);
                 total_executed_instructions++;
             }
-
+            
             {
                 lock_guard<mutex> lk(p->m);
                 if (p->state == P_RUNNING) { 
@@ -864,13 +963,14 @@ namespace CSOPESY {
                         config.min_mem_per_proc, config.max_mem_per_proc
                     );
                     uint64_t mem_size = mem_dist(rng);
-                    uint64_t rounded = 64;
+                    uint64_t rounded = 4;
                     while (rounded < mem_size && rounded < 65536) rounded *= 2;
                     create_process("auto-process" + to_string(pid), rounded);
                 }
             }
 
-            this_thread::sleep_for(10ms);
+            // CRITICAL CHANGED: Use yield for tighter loop
+            this_thread::yield();
         }
     }
 
@@ -894,11 +994,6 @@ namespace CSOPESY {
         
         return stats;
     }
-
-// ============================================================
-// final.cpp - PART 3 OF 3 (CORRECTED - FINAL)
-// Append this after Part 2
-// ============================================================
 
     string screen_get_attached_output(const string &process_name) {
         lock_guard<mutex> lock(processes_mutex);
@@ -1000,8 +1095,6 @@ namespace CSOPESY {
                 return true;
             }
             
-            // NOTE: Don't validate min/max-mem-per-proc as they might be outside 64-65536 range
-            // Validation happens at process creation time with clamping
             if (!is_valid_memory_size(config.max_overall_mem) || 
                 !is_valid_memory_size(config.mem_per_frame)) {
                 setMessage("Error: Invalid max-overall-mem or mem-per-frame in config.txt\n");
@@ -1016,6 +1109,8 @@ namespace CSOPESY {
             busy_core_count.store(0);
             total_busy_ticks.store(0);
             total_ticks_elapsed.store(0);
+            idle_cpu_time_ns.store(0);
+            simulation_start_time = chrono::steady_clock::now();
 
             if (!scheduler_thread.joinable()) scheduler_thread = thread(scheduler_loop);
             for (uint32_t i = 0; i < config.num_cpu; ++i)
@@ -1030,7 +1125,6 @@ namespace CSOPESY {
             return true;
         }
         
-        // Support both "scheduler-start" and "scheduler-test" (alias)
         if (c == "scheduler-start" || c == "scheduler-test") {
             generator_running = true; setMessage("Scheduler started\n"); return true;
         }
@@ -1040,15 +1134,23 @@ namespace CSOPESY {
         
         if (c == "screen -ls") {
             stringstream ss;
-            uint64_t elapsed = total_ticks_elapsed.load();
-            uint64_t busy_t = total_busy_ticks.load();
+            
+            // Fixed Utilization: (Total - Idle) / Total
+            auto now = chrono::steady_clock::now();
+            uint64_t total_elapsed_ns = chrono::duration_cast<chrono::nanoseconds>(now - simulation_start_time).count();
+            uint64_t total_capacity_ns = total_elapsed_ns * config.num_cpu;
+            uint64_t idle_ns = idle_cpu_time_ns.load();
+            
             double util = 0.0;
-            if (elapsed > 0 && config.num_cpu > 0)
-                util = 100.0 * ((double)busy_t / (double)(elapsed * config.num_cpu));
+            if (total_capacity_ns > 0) {
+                if (idle_ns > total_capacity_ns) idle_ns = total_capacity_ns; // Clamp for safety
+                util = 100.0 * ((double)(total_capacity_ns - idle_ns) / (double)total_capacity_ns);
+            }
             if (util > 100.0) util = 100.0;
+            if (util < 0.0) util = 0.0;
 
-            double avg_busy = (elapsed > 0) ? ((double)busy_t / (double)elapsed) : 0.0;
-            if (avg_busy > config.num_cpu) avg_busy = config.num_cpu;
+            // Recalculate Cores Used based on util percentage
+            double avg_busy = (util / 100.0) * config.num_cpu;
 
             ss << "=== CPU UTILIZATION REPORT ===\n";
             ss << "CPU utilization: " << fixed << setprecision(2) << util << "%\n";
@@ -1090,9 +1192,6 @@ namespace CSOPESY {
                 ss << p->name << "  " << ts << "  Finished  "
                 << p->instructions.size() << " / " << p->instructions.size() << "\n";
             }
-
-            total_busy_ticks.store(0);
-            total_ticks_elapsed.store(0);
 
             setMessage(ss.str());
             return true;
@@ -1252,11 +1351,13 @@ namespace CSOPESY {
                 }
             }
             
+            int count = 0;
             for (auto &p : procs) {
                 lock_guard<mutex> pl(p->m);
                 if (p->state != P_FINISHED && p->state != P_ERROR && p->memory_size > 0) {
                     ss << p->name << " (PID " << p->pid << "): " 
                        << p->memory_size << " bytes\n";
+                    if (++count > 10) { ss << "..."; break; }
                 }
             }
             
@@ -1268,7 +1369,10 @@ namespace CSOPESY {
             auto stats = get_memory_stats();
             uint64_t total_ticks = total_ticks_elapsed.load();
             uint64_t busy_ticks = total_busy_ticks.load();
-            uint64_t idle_ticks = total_ticks * config.num_cpu - busy_ticks;
+            
+            if (busy_ticks > total_ticks * config.num_cpu) busy_ticks = total_ticks * config.num_cpu;
+            
+            uint64_t idle_ticks = (total_ticks * config.num_cpu) - busy_ticks;
             
             stringstream ss;
             ss << "=========================================\n";
@@ -1288,16 +1392,23 @@ namespace CSOPESY {
         }
 
         if (c == "report-util") {
-            stringstream ss;
-            uint64_t elapsed = total_ticks_elapsed.load();
-            uint64_t busy_t = total_busy_ticks.load();
+             stringstream ss;
+            
+            // Use same logic as screen -ls for consistency
+            auto now = chrono::steady_clock::now();
+            uint64_t total_elapsed_ns = chrono::duration_cast<chrono::nanoseconds>(now - simulation_start_time).count();
+            uint64_t total_capacity_ns = total_elapsed_ns * config.num_cpu;
+            uint64_t idle_ns = idle_cpu_time_ns.load();
+            
             double util = 0.0;
-            if (elapsed > 0 && config.num_cpu > 0)
-                util = 100.0 * ((double)busy_t / (double)(elapsed * config.num_cpu));
+            if (total_capacity_ns > 0) {
+                if (idle_ns > total_capacity_ns) idle_ns = total_capacity_ns;
+                util = 100.0 * ((double)(total_capacity_ns - idle_ns) / (double)total_capacity_ns);
+            }
             if (util > 100.0) util = 100.0;
+            if (util < 0.0) util = 0.0;
 
-            double avg_busy = (elapsed > 0) ? ((double)busy_t / (double)elapsed) : 0.0;
-            if (avg_busy > config.num_cpu) avg_busy = config.num_cpu;
+            double avg_busy = (util / 100.0) * config.num_cpu;
 
             ss << "=== CPU UTILIZATION REPORT ===\n";
             ss << "CPU utilization: " << fixed << setprecision(2) << util << "%\n";
@@ -1362,6 +1473,7 @@ namespace CSOPESY {
         busy_core_count.store(0);
         total_busy_ticks.store(0);
         total_ticks_elapsed.store(0);
+        idle_cpu_time_ns.store(0);
     }
 
 } // namespace CSOPESY
